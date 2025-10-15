@@ -276,13 +276,17 @@ def create_giveaway_start_message(contest_name: str, duration: int, winners_coun
     time_info = f"{end_str} (Europe/Tallinn)"
      
     valid_prizes = [prize.strip() for prize in prizes if prize and prize.strip()]
-    prizes_text = ", ".join(valid_prizes) if valid_prizes else "🎁 Mystery Prize"
     
     message = f"🎂 {contest_name} Giveaway Started!\n\n"
     message += f"⏰ Ends: {time_info}\n"
     
     if valid_prizes:
-        message += f"🎁 Prizes: {prizes_text}\n"
+        message += f"🎁 Prizes:\n"
+        for i, prize in enumerate(valid_prizes, 1):
+            position_emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏆"
+            message += f"{position_emoji} {prize}\n"
+    else:
+        message += f"🎁 Prizes: 🎁 Mystery Prize\n"
     
     message += f"🏆 Winners: {winners_count}\n\n"
     message += "📌 How to participate:\n"
@@ -358,26 +362,9 @@ async def get_prize_details(contest_id: int):
     from db import get_prize_details as db_get_prize_details
     return await db_get_prize_details(contest_id, DB_CONFIG)
 
-async def set_prize_details(contest_id: int, reward_info: str, data: str):
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute("SELECT id FROM prizes WHERE contest_id = %s", (contest_id,))
-            existing = await cursor.fetchone()
-            
-            if existing:
-                await cursor.execute(
-                    "UPDATE prizes SET reward_info = %s, data = %s WHERE contest_id = %s",
-                    (reward_info, data, contest_id)
-                )
-            else:
-                await cursor.execute(
-                    "INSERT INTO prizes (contest_id, reward_info, data) VALUES (%s, %s, %s)",
-                    (contest_id, reward_info, data)
-                )
-            await conn.commit()
-    finally:
-        conn.close()
+async def set_prize_details(contest_id: int, position: int, reward_info: str, data: str):
+    from db import set_prize_details as db_set_prize_details
+    return await db_set_prize_details(contest_id, position, reward_info, data, DB_CONFIG)
 
 async def get_contest_by_id(contest_id: int):
     conn = await get_db_connection()
@@ -1176,8 +1163,7 @@ async def set_prize_data_command(message: types.Message):
         reward_info = args[2]
         data = args[3] if len(args) > 3 else ""
         
-        from db import set_prize_details
-        await set_prize_details(contest_id, reward_info, data)
+        await set_prize_details(contest_id, position, reward_info, data)
         
         await message.answer(f"✅ Prize data updated for contest {contest_id}, position {position}:\n🎁 Reward: {reward_info}\n🔑 Data: {data}")
         logger.info(f"Prize data updated for contest {contest_id} by user {message.from_user.id}")
@@ -1216,8 +1202,7 @@ async def prize_info_command(message: types.Message):
     try:
         contest_id = int(args[0])
         
-        from db import get_prize_details
-        prize_details = await get_prize_details(contest_id, DB_CONFIG)
+        prize_details = await get_prize_details(contest_id)
         
         if prize_details:
             message_text = f"🎁 Prize Info for Contest {contest_id}:\n\n"
