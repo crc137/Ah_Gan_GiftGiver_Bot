@@ -1061,6 +1061,9 @@ async def create_contest_command(message: types.Message):
         logger.info(f"Image attached: {image_url}")
     
     args = shlex.split(message.text)[1:]
+    logger.info(f"Parsed args: {args}")
+    logger.info(f"Number of args: {len(args)}")
+    
     if len(args) < 3:
         await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\n⏰ Duration formats:\n• 7д, 7дней - 7 days (max 365)\n• 1м, 1месяц - 1 month (max 12)\n• 2ч, 2часа - 2 hours (max 8760)\n• 30мин - 30 minutes (max 1440)\n• 7 - 7 days (max 365)\n• 50 - 50 days (max 365)\n• 8:46 - specific time (Europe/Tallinn, must be in future)\n\n📸 You can attach an image or provide image_url!")
         return
@@ -1071,10 +1074,12 @@ async def create_contest_command(message: types.Message):
         winners_count = int(args[2])
         
         remaining_args = args[3:] if len(args) > 3 else []
+        logger.info(f"Remaining args for prizes: {remaining_args}")
         prizes = []
         url_image = None
         
         for arg in remaining_args:
+            logger.info(f"Processing arg: '{arg}'")
             if arg.startswith(('http://', 'https://')):
                 if any(ext in arg.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
                     url_image = arg
@@ -1088,6 +1093,10 @@ async def create_contest_command(message: types.Message):
                         prizes.append(arg) 
             else:
                 prizes.append(arg)
+                logger.info(f"Added prize: '{arg}'")
+        
+        logger.info(f"Final prizes list: {prizes}")
+        logger.info(f"Final image URL: {url_image}")
         final_image_url = image_url if image_url else url_image
         
         from db import add_contest
