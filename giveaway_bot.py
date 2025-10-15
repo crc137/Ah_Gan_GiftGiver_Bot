@@ -606,7 +606,8 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     for i, winner in enumerate(selected_winners):
         position = i + 1  
         await assign_winner_to_prize(current_contest_id, position, winner.id, DB_CONFIG)
-        winners[winner.id] = f"Position {position}"
+        prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
+        winners[winner.id] = prize_name
 
     text = (
         "✨ The giveaway is over!\n"
@@ -617,6 +618,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     for i, winner in enumerate(selected_winners):
         position = i + 1
         position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏆"
+        prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
         
         if winner.username:
             display_name = f"@{winner.username}"
@@ -627,7 +629,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
             else:
                 display_name = f"[Anonymous](tg://user?id={winner.id})"
         
-        text += f"{position_emoji} {position}st place: {display_name}\n"
+        text += f"{position_emoji} {position}st place: {display_name} - {prize_name}\n"
 
     text += (
         "\nTap the button below to claim your prize 🎁\n"
