@@ -278,17 +278,17 @@ def create_giveaway_start_message(contest_name: str, duration: int, winners_coun
     valid_prizes = [prize.strip() for prize in prizes if prize and prize.strip()]
     
     message = f"🎂 {contest_name} Giveaway Started!\n\n"
-    message += f"⏰ Ends: {time_info}\n"
+    message += f"⏰ Ends: {time_info}\n\n"
     
     if valid_prizes:
         message += f"🎁 Prizes:\n"
         for i, prize in enumerate(valid_prizes, 1):
-            position_emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏆"
+            position_emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
             message += f"{position_emoji} {prize}\n"
     else:
         message += f"🎁 Prizes: 🎁 Mystery Prize\n"
     
-    message += f"🏆 Winners: {winners_count}\n\n"
+    message += f"\n\n 🏆 Winners: {winners_count}\n\n"
     message += "📌 How to participate:\n"
     message += "(｡･ω･｡) Tap the \"🎁 Join\" button, sweetie!\n"
     message += "(*≧ω≦) Sit tight until the giveaway ends!\n"
