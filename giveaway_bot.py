@@ -789,7 +789,7 @@ async def start_giveaway_command(message: types.Message):
                 giveaway_has_image = False
         except Exception as e:
             logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
-            warning_msg = f"⚠️ Не удалось загрузить изображение из URL. Конкурс создан без изображения.\n\n"
+            warning_msg = "The image is in an unsupported format (AVIF/HEIC). The contest has been created without an image.\n\n"
             sent_msg = await message.answer(
                 warning_msg + create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                 reply_markup=builder.as_markup()
@@ -876,7 +876,7 @@ async def contest_command(message: types.Message):
                 giveaway_has_image = False
         except Exception as e:
             logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
-            warning_msg = f"⚠️ Не удалось загрузить изображение из URL. Конкурс создан без изображения.\n\n"
+            warning_msg = "The image is in an unsupported format (AVIF/HEIC). The contest has been created without an image.\n\n"
             sent_msg = await message.answer(
                 warning_msg + create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                 reply_markup=builder.as_markup()
@@ -895,6 +895,8 @@ async def contest_command(message: types.Message):
     asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
 
 async def download_image(url: str) -> BufferedInputFile | None:
+    logger.info(f"Starting image download from: {url}")
+    
     try:
         if not url or not url.startswith(('http://', 'https://')):
             logger.warning(f"Invalid URL format: {url}")
@@ -902,26 +904,37 @@ async def download_image(url: str) -> BufferedInputFile | None:
             
         timeout = aiohttp.ClientTimeout(total=15)  
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'image/*,*/*;q=0.8'
         }
         
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            logger.info(f"Making request to: {url}")
             async with session.get(url, allow_redirects=True) as resp:
+                logger.info(f"Response status: {resp.status}")
+                logger.info(f"Response headers: {dict(resp.headers)}")
+                
                 if resp.status != 200:
                     logger.warning(f"HTTP error {resp.status} for URL: {url}")
                     return None
                     
                 content_type = resp.headers.get("Content-Type", "").lower()
+                logger.info(f"Content-Type: {content_type}")
+                
                 if not content_type.startswith("image/"):
                     logger.warning(f"Invalid content type {content_type} for URL: {url}")
                     return None
                     
                 content_length = resp.headers.get('Content-Length')
-                if content_length and int(content_length) > 20 * 1024 * 1024:
-                    logger.warning(f"Image too large ({content_length} bytes) for URL: {url}")
-                    return None
+                if content_length:
+                    logger.info(f"Content-Length: {content_length} bytes")
+                    if int(content_length) > 20 * 1024 * 1024:
+                        logger.warning(f"Image too large ({content_length} bytes) for URL: {url}")
+                        return None
                     
                 data = await resp.read()
+                logger.info(f"Downloaded {len(data)} bytes")
+                
                 if not data:
                     logger.warning(f"Empty image data for URL: {url}")
                     return None
@@ -932,13 +945,37 @@ async def download_image(url: str) -> BufferedInputFile | None:
                     
                 supported_formats = ['jpeg', 'jpg', 'png', 'gif', 'webp']
                 subtype = content_type.split("/", 1)[1].split(';')[0] if "/" in content_type else "jpg"
+                logger.info(f"Image subtype from Content-Type: {subtype}")
                 
                 if subtype not in supported_formats:
                     logger.warning(f"Unsupported image format {subtype} for URL: {url}")
                     return None
-                    
-                filename = f"image.{subtype}"
-                logger.info(f"Successfully downloaded image from {url} ({len(data)} bytes, {subtype})")
+                
+                if data.startswith(b'\xff\xd8\xff'):
+                    actual_format = 'jpeg'
+                elif data.startswith(b'\x89PNG\r\n\x1a\n'):
+                    actual_format = 'png'
+                elif data.startswith(b'GIF87a') or data.startswith(b'GIF89a'):
+                    actual_format = 'gif'
+                elif data.startswith(b'RIFF') and b'WEBP' in data[:12]:
+                    actual_format = 'webp'
+                elif data.startswith(b'\x00\x00\x00 ftypavif'):
+                    actual_format = 'avif'
+                    logger.warning(f"AVIF format detected - not supported by Telegram Bot API: {url}")
+                    return None
+                else:
+                    actual_format = 'unknown'
+                    logger.warning(f"Unknown image format detected in data for URL: {url}")
+                
+                logger.info(f"Actual image format detected: {actual_format}")
+                
+                filename = f"image.{actual_format if actual_format != 'unknown' else subtype}"
+                logger.info(f"Successfully downloaded image from {url} ({len(data)} bytes, {actual_format})")
+                
+                if actual_format == 'unknown' and len(data) > 100:  
+                    logger.warning(f"Unknown image format, but data size suggests it might be valid: {len(data)} bytes")
+                    filename = f"image.{subtype}"
+                
                 return BufferedInputFile(data, filename)
                 
     except aiohttp.ClientError as e:
@@ -994,9 +1031,14 @@ async def create_contest_command(message: types.Message):
             if arg.startswith(('http://', 'https://')):
                 if any(ext in arg.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
                     url_image = arg
+                    logger.info(f"Detected image URL: {arg}")
                 else:
-                    logger.warning(f"URL does not appear to be an image: {arg}")
-                    prizes.append(arg) 
+                    if 'image' in arg.lower() or 'photo' in arg.lower() or 'img' in arg.lower():
+                        url_image = arg
+                        logger.info(f"Detected potential image URL (no extension): {arg}")
+                    else:
+                        logger.warning(f"URL does not appear to be an image: {arg}")
+                        prizes.append(arg) 
             else:
                 prizes.append(arg)
         final_image_url = image_url if image_url else url_image
