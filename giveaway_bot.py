@@ -91,24 +91,35 @@ def parse_duration_input(duration_str: str) -> int:
                 hours = int(parts[0])
                 minutes = int(parts[1])
                 
+                if hours < 0 or hours > 23:
+                    raise ValueError("Hours must be between 0 and 23")
+                if minutes < 0 or minutes > 59:
+                    raise ValueError("Minutes must be between 0 and 59")
+                
                 tallinn_tz = pytz.timezone('Europe/Tallinn')
                 now = datetime.now(tallinn_tz)
                 target_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
                 
                 if target_time <= now:
-                    target_time = target_time.replace(day=target_time.day + 1)
+                    current_time_str = now.strftime("%H:%M")
+                    requested_time_str = f"{hours:02d}:{minutes:02d}"
+                    raise ValueError(f"Time {requested_time_str} has already passed. Current time is {current_time_str}. Please specify a future time.")
                 
                 duration_seconds = int((target_time - now).total_seconds())
                 return duration_seconds
-        except ValueError:
-            pass
+        except ValueError as e:
+            raise ValueError(str(e))
     
     if duration_str.startswith('d'):
         try:
             days = int(duration_str[1:])
+            if days <= 0:
+                raise ValueError("Days must be a positive number")
+            if days > 365:
+                raise ValueError("Duration cannot exceed 365 days")
             return days * 24 * 3600
-        except ValueError:
-            pass
+        except ValueError as e:
+            raise ValueError(str(e))
     
     if 'm' in duration_str and 'd' in duration_str:
         try:
@@ -117,42 +128,74 @@ def parse_duration_input(duration_str: str) -> int:
             for part in parts:
                 if part.startswith('m'):
                     months = int(part[1:])
+                    if months <= 0:
+                        raise ValueError("Months must be a positive number")
+                    if months > 12:
+                        raise ValueError("Months cannot exceed 12")
                     total_seconds += months * 30 * 24 * 3600
                 elif part.startswith('d'):
                     days = int(part[1:])
+                    if days <= 0:
+                        raise ValueError("Days must be a positive number")
+                    if days > 365:
+                        raise ValueError("Days cannot exceed 365")
                     total_seconds += days * 24 * 3600
+            if total_seconds > 365 * 24 * 3600:
+                raise ValueError("Total duration cannot exceed 365 days")
             return total_seconds
-        except ValueError:
-            pass
+        except ValueError as e:
+            raise ValueError(str(e))
     
     if duration_str.isdigit():
-        return int(duration_str)
+        days = int(duration_str)
+        if days <= 0:
+            raise ValueError("Duration must be a positive number")
+        if days > 365:
+            raise ValueError("Duration cannot exceed 365 days")
+        return days * 24 * 3600
     
     if 'д' in duration_str or 'day' in duration_str:
         days = int(''.join(filter(str.isdigit, duration_str)))
+        if days <= 0:
+            raise ValueError("Days must be a positive number")
+        if days > 365:
+            raise ValueError("Days cannot exceed 365")
         return days * 24 * 3600 
     
     elif 'мин' in duration_str or 'minute' in duration_str:
         minutes = int(''.join(filter(str.isdigit, duration_str)))
+        if minutes <= 0:
+            raise ValueError("Minutes must be a positive number")
+        if minutes > 1440: 
+            raise ValueError("Minutes cannot exceed 1440 (24 hours)")
         return minutes * 60 
     
     elif 'ч' in duration_str or 'hour' in duration_str:
         hours = int(''.join(filter(str.isdigit, duration_str)))
+        if hours <= 0:
+            raise ValueError("Hours must be a positive number")
+        if hours > 8760: 
+            raise ValueError("Hours cannot exceed 8760 (365 days)")
         return hours * 3600 
     
     elif 'м' in duration_str or 'month' in duration_str:
         months = int(''.join(filter(str.isdigit, duration_str)))
+        if months <= 0:
+            raise ValueError("Months must be a positive number")
+        if months > 12:
+            raise ValueError("Months cannot exceed 12")
         return months * 30 * 24 * 3600 
     
     else:
         try:
             days = int(duration_str)
-            if days <= 365:  
-                return days * 24 * 3600
-            else:
-                return (days // 30) * 30 * 24 * 3600
-        except ValueError:
-            return 3600
+            if days <= 0:
+                raise ValueError("Duration must be a positive number")
+            if days > 365:
+                raise ValueError("Duration cannot exceed 365 days")
+            return days * 24 * 3600
+        except ValueError as e:
+            raise ValueError(f"Invalid duration format: {duration_str}. {str(e)}")
 
 def format_duration(duration_seconds: int) -> str:
     if duration_seconds < 60:
@@ -1015,7 +1058,7 @@ async def create_contest_command(message: types.Message):
     
     args = shlex.split(message.text)[1:]
     if len(args) < 3:
-        await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\n⏰ Duration formats:\n• 7д, 7дней - 7 days\n• 1м, 1месяц - 1 month\n• 2ч, 2часа - 2 hours\n• 30мин - 30 minutes\n• 7 - 7 days (auto)\n• 50 - 50 days (auto)\n• 8:46 - specific time (Europe/Tallinn)\n\n📸 You can attach an image or provide image_url!")
+        await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\n⏰ Duration formats:\n• 7д, 7дней - 7 days (max 365)\n• 1м, 1месяц - 1 month (max 12)\n• 2ч, 2часа - 2 hours (max 8760)\n• 30мин - 30 minutes (max 1440)\n• 7 - 7 days (max 365)\n• 50 - 50 days (max 365)\n• 8:46 - specific time (Europe/Tallinn, must be in future)\n\n📸 You can attach an image or provide image_url!")
         return
     
     try:
