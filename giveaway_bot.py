@@ -789,8 +789,9 @@ async def start_giveaway_command(message: types.Message):
                 giveaway_has_image = False
         except Exception as e:
             logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
+            warning_msg = f"⚠️ Не удалось загрузить изображение из URL. Конкурс создан без изображения.\n\n"
             sent_msg = await message.answer(
-                create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
+                warning_msg + create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                 reply_markup=builder.as_markup()
             )
             giveaway_has_image = False
@@ -875,8 +876,9 @@ async def contest_command(message: types.Message):
                 giveaway_has_image = False
         except Exception as e:
             logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
+            warning_msg = f"⚠️ Не удалось загрузить изображение из URL. Конкурс создан без изображения.\n\n"
             sent_msg = await message.answer(
-                create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
+                warning_msg + create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                 reply_markup=builder.as_markup()
             )
             giveaway_has_image = False
@@ -893,20 +895,58 @@ async def contest_command(message: types.Message):
     asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
 
 async def download_image(url: str) -> BufferedInputFile | None:
-    timeout = aiohttp.ClientTimeout(total=10)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url, allow_redirects=True) as resp:
-            if resp.status != 200:
-                return None
-            content_type = resp.headers.get("Content-Type", "").lower()
-            if not content_type.startswith("image/"):
-                return None
-            data = await resp.read()
-            if not data:
-                return None
-            subtype = content_type.split("/", 1)[1] if "/" in content_type else "jpg"
-            filename = f"image.{subtype.split(';')[0]}"
-            return BufferedInputFile(data, filename)
+    try:
+        if not url or not url.startswith(('http://', 'https://')):
+            logger.warning(f"Invalid URL format: {url}")
+            return None
+            
+        timeout = aiohttp.ClientTimeout(total=15)  
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+            async with session.get(url, allow_redirects=True) as resp:
+                if resp.status != 200:
+                    logger.warning(f"HTTP error {resp.status} for URL: {url}")
+                    return None
+                    
+                content_type = resp.headers.get("Content-Type", "").lower()
+                if not content_type.startswith("image/"):
+                    logger.warning(f"Invalid content type {content_type} for URL: {url}")
+                    return None
+                    
+                content_length = resp.headers.get('Content-Length')
+                if content_length and int(content_length) > 20 * 1024 * 1024:
+                    logger.warning(f"Image too large ({content_length} bytes) for URL: {url}")
+                    return None
+                    
+                data = await resp.read()
+                if not data:
+                    logger.warning(f"Empty image data for URL: {url}")
+                    return None
+                    
+                if len(data) > 20 * 1024 * 1024:
+                    logger.warning(f"Downloaded image too large ({len(data)} bytes) for URL: {url}")
+                    return None
+                    
+                supported_formats = ['jpeg', 'jpg', 'png', 'gif', 'webp']
+                subtype = content_type.split("/", 1)[1].split(';')[0] if "/" in content_type else "jpg"
+                
+                if subtype not in supported_formats:
+                    logger.warning(f"Unsupported image format {subtype} for URL: {url}")
+                    return None
+                    
+                filename = f"image.{subtype}"
+                logger.info(f"Successfully downloaded image from {url} ({len(data)} bytes, {subtype})")
+                return BufferedInputFile(data, filename)
+                
+    except aiohttp.ClientError as e:
+        logger.warning(f"Network error downloading image from {url}: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Unexpected error downloading image from {url}: {e}")
+        return None
 
 @dp.message(Command("create_contest"))
 async def create_contest_command(message: types.Message):
@@ -952,7 +992,11 @@ async def create_contest_command(message: types.Message):
         
         for arg in remaining_args:
             if arg.startswith(('http://', 'https://')):
-                url_image = arg
+                if any(ext in arg.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
+                    url_image = arg
+                else:
+                    logger.warning(f"URL does not appear to be an image: {arg}")
+                    prizes.append(arg) 
             else:
                 prizes.append(arg)
         final_image_url = image_url if image_url else url_image
