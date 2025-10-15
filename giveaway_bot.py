@@ -19,13 +19,19 @@ import pytz
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
+try:
+    os.makedirs("logs", exist_ok=True)
+    handlers = [
         logging.FileHandler("logs/giveaway_bot.log"),
         logging.StreamHandler()
     ]
+except (OSError, PermissionError) as e:
+    handlers = [logging.StreamHandler()]
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=handlers
 )
 logger = logging.getLogger(__name__)
 
