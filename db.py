@@ -100,17 +100,21 @@ async def create_prizes_for_contest(contest_id: int, winners_count: int, config,
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
-            await cursor.execute(
-                "SELECT prizes FROM contests WHERE id = %s",
-                (contest_id,)
-            )
-            result = await cursor.fetchone()
-            contest_prizes = result[0].split(',') if result and result[0] else []
+            if prizes_list:
+                contest_prizes = prizes_list
+            else:
+                await cursor.execute(
+                    "SELECT prizes FROM contests WHERE id = %s",
+                    (contest_id,)
+                )
+                result = await cursor.fetchone()
+                contest_prizes = result[0].split(',') if result and result[0] else []
             
             for position in range(1, winners_count + 1):
                 security_code = secrets.token_hex(16)
                 
                 prize_name = contest_prizes[position - 1] if position - 1 < len(contest_prizes) else f"Prize {position}"
+                logger.info(f"Creating prize {position}: {prize_name}")
                 
                 await cursor.execute("""
                     INSERT INTO prizes (contest_id, position, reward_info, data, security_code)
