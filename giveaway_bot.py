@@ -526,11 +526,19 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     await asyncio.sleep(duration)
     if not participants:
         if giveaway_has_image:
-            await bot.edit_message_caption(
-                chat_id=giveaway_chat_id,
-                message_id=giveaway_message_id,
-                caption="😿 Oh no, nobody joined the giveaway…"
-            )
+            try:
+                await bot.edit_message_caption(
+                    chat_id=giveaway_chat_id,
+                    message_id=giveaway_message_id,
+                    caption="😿 Oh no, nobody joined the giveaway…"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to edit caption for no participants, falling back to text edit: {e}")
+                await bot.edit_message_text(
+                    chat_id=giveaway_chat_id,
+                    message_id=giveaway_message_id,
+                    text="😿 Oh no, nobody joined the giveaway…"
+                )
         else:
             await bot.edit_message_text(
                 chat_id=giveaway_chat_id,
@@ -589,13 +597,23 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     if giveaway_has_image:
         MAX_CAPTION = 1024
         caption = text if len(text) <= MAX_CAPTION else (text[:MAX_CAPTION - 1] + "…")
-        await bot.edit_message_caption(
-            chat_id=giveaway_chat_id,
-            message_id=giveaway_message_id,
-            caption=caption,
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
+        try:
+            await bot.edit_message_caption(
+                chat_id=giveaway_chat_id,
+                message_id=giveaway_message_id,
+                caption=caption,
+                reply_markup=builder.as_markup(),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to edit caption, falling back to text edit: {e}")
+            await bot.edit_message_text(
+                chat_id=giveaway_chat_id,
+                message_id=giveaway_message_id,
+                text=text,
+                reply_markup=builder.as_markup(),
+                parse_mode="Markdown"
+            )
     else:
         await bot.edit_message_text(
             chat_id=giveaway_chat_id,
@@ -748,7 +766,7 @@ async def start_giveaway_command(message: types.Message):
     claimed_winners.clear()
     current_contest_id = contest_id
     
-    giveaway_has_image = bool(contest['image_url'])
+    giveaway_has_image = False 
     
     builder = InlineKeyboardBuilder()
     builder.button(text="🎁 Join", callback_data="join")
@@ -768,11 +786,14 @@ async def start_giveaway_command(message: types.Message):
                     create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                     reply_markup=builder.as_markup()
                 )
-        except Exception:
+                giveaway_has_image = False
+        except Exception as e:
+            logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
             sent_msg = await message.answer(
                 create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                 reply_markup=builder.as_markup()
             )
+            giveaway_has_image = False
     else:
         sent_msg = await message.answer(
             create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
@@ -831,7 +852,7 @@ async def contest_command(message: types.Message):
     claimed_winners.clear()
     current_contest_id = contest_id
     
-    giveaway_has_image = bool(contest['image_url'])
+    giveaway_has_image = False 
     
     builder = InlineKeyboardBuilder()
     builder.button(text="🎁 Join", callback_data="join")
@@ -851,11 +872,14 @@ async def contest_command(message: types.Message):
                     create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                     reply_markup=builder.as_markup()
                 )
-        except Exception:
+                giveaway_has_image = False
+        except Exception as e:
+            logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
             sent_msg = await message.answer(
                 create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
                 reply_markup=builder.as_markup()
             )
+            giveaway_has_image = False
     else:
         sent_msg = await message.answer(
             create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
