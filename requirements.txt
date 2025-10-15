@@ -2,3 +2,4 @@ aiogram
 aiomysql
 aiohttp
 python-dotenv
+pytz

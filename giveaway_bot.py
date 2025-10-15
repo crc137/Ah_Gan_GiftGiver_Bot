@@ -15,6 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import BufferedInputFile
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import pytz
 
 load_dotenv()
 
@@ -83,7 +84,9 @@ def parse_duration_input(duration_str: str) -> int:
             if len(parts) == 2:
                 hours = int(parts[0])
                 minutes = int(parts[1])
-                now = datetime.now()
+                
+                tallinn_tz = pytz.timezone('Europe/Tallinn')
+                now = datetime.now(tallinn_tz)
                 target_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
                 
                 if target_time <= now:
@@ -216,10 +219,12 @@ def validate_config():
     logger.info("Configuration validation passed")
 
 def create_giveaway_start_message(contest_name: str, duration: int, winners_count: int, prizes: list) -> str:
-    end_time = datetime.now() + timedelta(seconds=duration)
+    tallinn_tz = pytz.timezone('Europe/Tallinn')
+    now = datetime.now(tallinn_tz)
+    end_time = now + timedelta(seconds=duration)
     
     end_str = end_time.strftime("%B %d, %H:%M")
-    time_info = f"{end_str} (UTC/GMT +3 hours)"
+    time_info = f"{end_str} (Europe/Tallinn)"
      
     valid_prizes = [prize.strip() for prize in prizes if prize and prize.strip()]
     prizes_text = ", ".join(valid_prizes) if valid_prizes else "🎁 Mystery Prize"
@@ -903,25 +908,35 @@ async def create_contest_command(message: types.Message):
     
     args = shlex.split(message.text)[1:]
     if len(args) < 3:
-        await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...]\n\n⏰ Duration formats:\n• 7д, 7дней - 7 days\n• 1м, 1месяц - 1 month\n• 2ч, 2часа - 2 hours\n• 30мин - 30 minutes\n• 7 - 7 days (auto)\n• 50 - 50 days (auto)\n\n📸 You can also attach an image to the contest!")
+        await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\n⏰ Duration formats:\n• 7д, 7дней - 7 days\n• 1м, 1месяц - 1 month\n• 2ч, 2часа - 2 hours\n• 30мин - 30 minutes\n• 7 - 7 days (auto)\n• 50 - 50 days (auto)\n• 8:46 - specific time (Europe/Tallinn)\n\n📸 You can attach an image or provide image_url!")
         return
     
     try:
         name = args[0]
         duration = parse_duration_input(args[1])
         winners_count = int(args[2])
-        prizes = args[3:] if len(args) > 3 else []
+        
+        remaining_args = args[3:] if len(args) > 3 else []
+        prizes = []
+        url_image = None
+        
+        for arg in remaining_args:
+            if arg.startswith(('http://', 'https://')):
+                url_image = arg
+            else:
+                prizes.append(arg)
+        final_image_url = image_url if image_url else url_image
         
         from db import add_contest
-        contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, image_url)
+        contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url)
         
         duration_formatted = format_duration(duration)
         response_text = f"✅ Contest '{name}' created with ID {contest_id}.\n⏰ Duration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
-        if image_url:
-            response_text += f"\n📸 Image attached: {image_url}"
+        if final_image_url:
+            response_text += f"\n📸 Image: {final_image_url}"
         
         await message.answer(response_text)
-        logger.info(f"Created contest {contest_id}: {name} with image: {image_url}")
+        logger.info(f"Created contest {contest_id}: {name} with image: {final_image_url}")
     except ValueError as e:
         await message.answer(f"❌ Invalid parameters: {e}")
         logger.error(f"Invalid contest creation parameters: {e}")
