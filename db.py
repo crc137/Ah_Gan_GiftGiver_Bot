@@ -78,15 +78,19 @@ async def get_prize_details(contest_id: int, config):
     try:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "SELECT reward_info, data FROM prizes WHERE contest_id = %s",
+                "SELECT position, reward_info, data FROM prizes WHERE contest_id = %s ORDER BY position",
                 (contest_id,)
             )
-            result = await cursor.fetchone()
-            if result:
-                return {
-                    'reward_info': result[0],
-                    'data': result[1]
-                }
+            results = await cursor.fetchall()
+            if results:
+                prizes = []
+                for result in results:
+                    prizes.append({
+                        'position': result[0],
+                        'reward_info': result[1],
+                        'data': result[2]
+                    })
+                return prizes
             return None
     except Exception as e:
         logger.error(f"Error getting prize details for contest {contest_id}: {e}")
@@ -194,27 +198,29 @@ async def mark_prize_as_claimed(contest_id: int, user_id: int, config):
     finally:
         conn.close()
 
-async def set_prize_details(contest_id: int, reward_info: str, data: str, config):
+async def set_prize_details(contest_id: int, position: int, reward_info: str, data: str, config):
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
-            await cursor.execute("SELECT id FROM prizes WHERE contest_id = %s", (contest_id,))
+            await cursor.execute("SELECT id FROM prizes WHERE contest_id = %s AND position = %s", (contest_id, position))
             existing = await cursor.fetchone()
             
             if existing:
                 await cursor.execute(
-                    "UPDATE prizes SET reward_info = %s, data = %s WHERE contest_id = %s",
-                    (reward_info, data, contest_id)
+                    "UPDATE prizes SET reward_info = %s, data = %s WHERE contest_id = %s AND position = %s",
+                    (reward_info, data, contest_id, position)
                 )
             else:
+                import secrets
+                security_code = secrets.token_hex(16)
                 await cursor.execute(
-                    "INSERT INTO prizes (contest_id, reward_info, data) VALUES (%s, %s, %s)",
-                    (contest_id, reward_info, data)
+                    "INSERT INTO prizes (contest_id, position, reward_info, data, security_code) VALUES (%s, %s, %s, %s, %s)",
+                    (contest_id, position, reward_info, data, security_code)
                 )
             await conn.commit()
-            logger.info(f"Prize details set for contest {contest_id}")
+            logger.info(f"Prize details set for contest {contest_id}, position {position}")
     except Exception as e:
-        logger.error(f"Error setting prize details for contest {contest_id}: {e}")
+        logger.error(f"Error setting prize details for contest {contest_id}, position {position}: {e}")
         raise
     finally:
         conn.close()

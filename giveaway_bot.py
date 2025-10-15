@@ -355,22 +355,8 @@ async def init_database():
         conn.close()
 
 async def get_prize_details(contest_id: int):
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute(
-                "SELECT reward_info, data FROM prizes WHERE contest_id = %s",
-                (contest_id,)
-            )
-            result = await cursor.fetchone()
-            if result:
-                return {
-                    'reward_info': result[0],
-                    'data': result[1]
-                }
-            return None
-    finally:
-        conn.close()
+    from db import get_prize_details as db_get_prize_details
+    return await db_get_prize_details(contest_id, DB_CONFIG)
 
 async def set_prize_details(contest_id: int, reward_info: str, data: str):
     conn = await get_db_connection()
@@ -1231,13 +1217,16 @@ async def prize_info_command(message: types.Message):
         contest_id = int(args[0])
         
         from db import get_prize_details
-        prize_details = await get_prize_details(contest_id)
+        prize_details = await get_prize_details(contest_id, DB_CONFIG)
         
         if prize_details:
             message_text = f"🎁 Prize Info for Contest {contest_id}:\n\n"
-            message_text += f"📝 Reward: {prize_details['reward_info']}\n"
-            message_text += f"🔑 Data: {prize_details['data']}\n"
-            message_text += f"✅ Status: {'Configured' if prize_details['data'] else 'Not configured'}"
+            for i, prize in enumerate(prize_details, 1):
+                position_emoji = "🥇" if prize['position'] == 1 else "🥈" if prize['position'] == 2 else "🥉" if prize['position'] == 3 else "🏆"
+                message_text += f"{position_emoji} Position {prize['position']}:\n"
+                message_text += f"📝 Reward: {prize['reward_info']}\n"
+                message_text += f"🔑 Data: {prize['data']}\n"
+                message_text += f"✅ Status: {'Configured' if prize['data'] else 'Not configured'}\n\n"
         else:
             message_text = f"❌ No prize data found for contest {contest_id}"
         
