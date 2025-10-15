@@ -600,7 +600,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     selected_winners = random.sample(list(participants.values()), winners_count)
 
     from db import create_prizes_for_contest, assign_winner_to_prize
-    await create_prizes_for_contest(current_contest_id, winners_count, DB_CONFIG)
+    await create_prizes_for_contest(current_contest_id, winners_count, DB_CONFIG, prizes)
     
     winners.clear()
     for i, winner in enumerate(selected_winners):
