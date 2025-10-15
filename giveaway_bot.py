@@ -714,7 +714,6 @@ async def claim_command(message: types.Message):
     
     message_text = "🧁 Yay~ You made it! (✿◠‿◠)\nHere's your little gift 🎁\nHope it brings you a smile and a bit of luck 💖\n\n"
     
-    from aiogram.types import InlineKeyboardBuilder
     builder = InlineKeyboardBuilder()
     
     if winner_prize:
