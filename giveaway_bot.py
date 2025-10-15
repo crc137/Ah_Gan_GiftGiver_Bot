@@ -16,6 +16,13 @@ from aiogram.types import BufferedInputFile
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import pytz
+from db import (
+    get_db_connection, init_database, get_contest_by_id as db_get_contest_by_id,
+    add_contest as db_add_contest, list_contests as db_list_contests,
+    save_state_to_db as db_save_state_to_db, load_state_from_db as db_load_state_from_db,
+    create_contest_prizes, assign_winner_to_prize_position, get_winner_prize_info,
+    get_contest_prizes, set_prize_details, serialize_user, deserialize_user
+)
 
 load_dotenv()
 
@@ -62,18 +69,6 @@ giveaway_message_id = None
 giveaway_chat_id = None
 giveaway_has_image = False
 
-def serialize_user(user: types.User) -> dict:
-    return {
-        "id": user.id,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "username": user.username,
-        "language_code": user.language_code,
-        "is_bot": user.is_bot,
-    }
-
-def deserialize_user(data: dict) -> types.User:
-    return types.User(**{k: v for k, v in data.items() if v is not None})
 
 def sanitize_string(s: str) -> str:
     if not s:
@@ -223,7 +218,6 @@ def is_data(text: str) -> bool:
         r'^[A-Za-z0-9+/]{20,}$', 
         r'^[a-f0-9]{32,}$',     
     ]
-    import re
     for pattern in data_patterns:
         if re.match(pattern, text.strip()):
             return True
@@ -297,107 +291,20 @@ def create_giveaway_start_message(contest_name: str, duration: int, winners_coun
     
     return message
 
-async def get_db_connection(max_retries=3, retry_delay=5):
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Attempting database connection (attempt {attempt + 1}/{max_retries})")
-            return await aiomysql.connect(**DB_CONFIG)
-        except aiomysql.Error as e:
-            logger.error(f"Database connection failed (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-            else:
-                raise Exception("Failed to connect to database after retries")
 
-async def init_database():
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute("""
-                CREATE TABLE IF NOT EXISTS contests (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    contest_name VARCHAR(255) NOT NULL,
-                    duration INT NOT NULL,
-                    winners_count INT NOT NULL,
-                    prizes TEXT NOT NULL,
-                    image_url VARCHAR(500),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            await cursor.execute("""
-                CREATE TABLE IF NOT EXISTS prizes (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    contest_id INT NOT NULL,
-                    position INT NOT NULL,
-                    reward_info VARCHAR(255) NOT NULL,
-                    data TEXT NOT NULL,
-                    winner_user_id BIGINT,
-                    claimed_at TIMESTAMP NULL,
-                    security_code VARCHAR(32) NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (contest_id) REFERENCES contests(id) ON DELETE CASCADE,
-                    UNIQUE KEY unique_contest_position (contest_id, position)
-                )
-            """)
-            
-            await cursor.execute("""
-                CREATE TABLE IF NOT EXISTS giveaway_state (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    participants TEXT,
-                    winners TEXT,
-                    claimed_winners TEXT,
-                    giveaway_message_id BIGINT,
-                    giveaway_chat_id BIGINT,
-                    giveaway_has_image BOOLEAN DEFAULT FALSE,
-                    current_contest_id INT,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-                )
-            """)
-            await conn.commit()
-    finally:
-        conn.close()
-
-async def get_prize_details(contest_id: int):
-    from db import get_prize_details as db_get_prize_details
-    return await db_get_prize_details(contest_id, DB_CONFIG)
-
-async def set_prize_details(contest_id: int, position: int, reward_info: str, data: str):
-    from db import set_prize_details as db_set_prize_details
-    return await db_set_prize_details(contest_id, position, reward_info, data, DB_CONFIG)
 
 async def get_contest_by_id(contest_id: int):
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute(
-                "SELECT contest_name, duration, winners_count, prizes, image_url FROM contests WHERE id = %s",
-                (contest_id,)
-            )
-            result = await cursor.fetchone()
-            if result:
-                contest = {
-                    'name': result[0],
-                    'duration': result[1],
-                    'winners_count': result[2],
-                    'prizes': result[3].split(',') if result[3] else [],
-                    'image_url': result[4]
-                }
-                is_valid, error_msg = validate_contest_params(
-                    contest['duration'], 
-                    contest['winners_count'], 
-                    contest['prizes']
-                )
-                if not is_valid:
-                    logger.error(f"Invalid contest {contest_id}: {error_msg}")
-                    raise ValueError(f"Invalid contest parameters: {error_msg}")
-                return contest
-            return None
-    except Exception as e:
-        logger.error(f"Error getting contest {contest_id}: {e}")
-        raise
-    finally:
-        conn.close()
+    contest = await db_get_contest_by_id(contest_id, DB_CONFIG)
+    if contest:
+        is_valid, error_msg = validate_contest_params(
+            contest['duration'], 
+            contest['winners_count'], 
+            contest['prizes']
+        )
+        if not is_valid:
+            logger.error(f"Invalid contest {contest_id}: {error_msg}")
+            raise ValueError(f"Invalid contest parameters: {error_msg}")
+    return contest
 
 async def add_contest(contest_name: str, duration: int, winners_count: int, prizes: list, image_url: str = None):
     contest_name = sanitize_string(contest_name)
@@ -408,119 +315,19 @@ async def add_contest(contest_name: str, duration: int, winners_count: int, priz
     if not is_valid:
         raise ValueError(error_msg)
     
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute(
-                "INSERT INTO contests (contest_name, duration, winners_count, prizes, image_url) VALUES (%s, %s, %s, %s, %s)",
-                (contest_name, duration, winners_count, ','.join(prizes), image_url)
-            )
-            await conn.commit()
-            contest_id = cursor.lastrowid
-            logger.info(f"Created contest {contest_id}: {contest_name}")
-            
-            from db import create_contest_prizes
-            await create_contest_prizes(contest_id, prizes, DB_CONFIG)
-            
-            return contest_id
-    except Exception as e:
-        logger.error(f"Error creating contest: {e}")
-        raise
-    finally:
-        conn.close()
+    contest_id = await db_add_contest(contest_name, duration, winners_count, prizes, DB_CONFIG, image_url)
+    await create_contest_prizes(contest_id, prizes, DB_CONFIG)
+    return contest_id
 
-async def list_contests():
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute("SELECT id, contest_name, duration, winners_count FROM contests ORDER BY id")
-            results = await cursor.fetchall()
-            contests = []
-            for row in results:
-                contests.append({
-                    'id': row[0],
-                    'name': row[1],
-                    'duration': row[2],
-                    'winners_count': row[3]
-                })
-            return contests
-    finally:
-        conn.close()
 
 async def save_state_to_db():
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            participants_json = json.dumps([serialize_user(u) for u in participants.values()])
-            winners_json = json.dumps(winners)
-            claimed_winners_json = json.dumps(list(claimed_winners))
-            
-            await cursor.execute("SELECT id FROM giveaway_state LIMIT 1")
-            existing = await cursor.fetchone()
-            
-            if existing:
-                await cursor.execute("""
-                    UPDATE giveaway_state SET 
-                    participants = %s, winners = %s, claimed_winners = %s,
-                    giveaway_message_id = %s, giveaway_chat_id = %s, giveaway_has_image = %s,
-                    current_contest_id = %s
-                    WHERE id = 1
-                """, (participants_json, winners_json, claimed_winners_json, 
-                      giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id))
-            else:
-                await cursor.execute("""
-                    INSERT INTO giveaway_state 
-                    (participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (participants_json, winners_json, claimed_winners_json,
-                      giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id))
-            await conn.commit()
-    finally:
-        conn.close()
+    await db_save_state_to_db(participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id, DB_CONFIG)
 
 async def load_state_from_db():
     global participants, winners, claimed_winners
     global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
     
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute("""
-                SELECT participants, winners, claimed_winners, giveaway_message_id, 
-                       giveaway_chat_id, giveaway_has_image, current_contest_id
-                FROM giveaway_state LIMIT 1
-            """)
-            result = await cursor.fetchone()
-            
-            if result:
-                participants_data = json.loads(result[0] or '[]')
-                participants = {u["id"]: deserialize_user(u) for u in participants_data}
-                
-                winners = json.loads(result[1] or '{}')
-                claimed_winners = set(json.loads(result[2] or '[]'))
-                
-                giveaway_message_id = result[3]
-                giveaway_chat_id = result[4]
-                giveaway_has_image = bool(result[5])
-                current_contest_id = result[6]
-            else:
-                participants = {}
-                winners = {}
-                claimed_winners = set()
-                giveaway_message_id = None
-                giveaway_chat_id = None
-                giveaway_has_image = False
-                current_contest_id = None
-    except Exception:
-        participants = {}
-        winners = {}
-        claimed_winners = set()
-        giveaway_message_id = None
-        giveaway_chat_id = None
-        giveaway_has_image = False
-        current_contest_id = None
-    finally:
-        conn.close()
+    participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id = await db_load_state_from_db(DB_CONFIG)
 
 @dp.callback_query(lambda c: c.data == "join")
 async def join_callback(callback: types.CallbackQuery):
@@ -576,7 +383,6 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     winners_count = min(winners_count, len(participants))
     selected_winners = random.sample(list(participants.values()), winners_count)
 
-    from db import assign_winner_to_prize_position
     
     winners.clear()
     for i, winner in enumerate(selected_winners):
@@ -687,7 +493,6 @@ async def claim_command(message: types.Message):
     claimed_winners.add(user_id)
     prize = winners[user_id]
     
-    from db import get_winner_prize_info
     winner_prize = await get_winner_prize_info(current_contest_id, user_id, DB_CONFIG) if current_contest_id else None
     
     if winner_prize:
@@ -754,7 +559,7 @@ async def start_giveaway_command(message: types.Message):
     
     args = message.text.split()[1:]
     if not args:
-        contests = await list_contests()
+        contests = await db_list_contests(DB_CONFIG)
         if not contests:
             await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
             return
@@ -841,7 +646,7 @@ async def contest_command(message: types.Message):
     
     args = message.text.split()[1:]
     if not args:
-        contests = await list_contests()
+        contests = await db_list_contests(DB_CONFIG)
         if not contests:
             await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
             return
@@ -1069,8 +874,7 @@ async def create_contest_command(message: types.Message):
         logger.info(f"Final image URL: {url_image}")
         final_image_url = image_url if image_url else url_image
         
-        from db import add_contest
-        contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url)
+        contest_id = await db_add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url)
         
         duration_formatted = format_duration(duration)
         response_text = f"✅ Contest '{name}' created with ID {contest_id}.\n⏰ Duration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
@@ -1159,7 +963,6 @@ async def set_prize_data_command(message: types.Message):
         
         prize_type = 'link' if prize_value.startswith(('http://', 'https://', 'www.', 't.me/')) else 'text'
         
-        from db import get_db_connection
         conn = await get_db_connection(DB_CONFIG)
         try:
             async with conn.cursor() as cursor:
@@ -1213,7 +1016,6 @@ async def prize_info_command(message: types.Message):
     try:
         contest_id = int(args[0])
         
-        from db import get_contest_prizes
         prize_details = await get_contest_prizes(contest_id, DB_CONFIG)
         
         if prize_details:
@@ -1346,11 +1148,14 @@ async def handle_any_message(message: types.Message):
 
 if __name__ == "__main__":
     async def main():   
-        validate_config()
-        from db import init_database
-        await init_database(DB_CONFIG)
-        from db import load_state_from_db
-        participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id = await load_state_from_db(DB_CONFIG)
-        await dp.start_polling(bot)
+        try:
+            validate_config()
+            await init_database(DB_CONFIG)
+            global participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
+            participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id = await db_load_state_from_db(DB_CONFIG)
+            await dp.start_polling(bot)
+        except Exception as e:
+            logger.critical(f"Fatal error in main: {e}")
+            raise
     
     asyncio.run(main())

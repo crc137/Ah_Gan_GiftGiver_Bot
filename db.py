@@ -89,7 +89,7 @@ async def get_prize_details(contest_id: int, config):
     try:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "SELECT position, reward_info, data FROM prizes WHERE contest_id = %s ORDER BY position",
+                "SELECT position, prize_name, prize_value FROM contest_prizes WHERE contest_id = %s ORDER BY position",
                 (contest_id,)
             )
             results = await cursor.fetchall()
@@ -110,8 +110,6 @@ async def get_prize_details(contest_id: int, config):
         conn.close()
 
 async def create_prizes_for_contest(contest_id: int, winners_count: int, config, prizes_list=None):
-    import secrets
-    
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
@@ -126,15 +124,14 @@ async def create_prizes_for_contest(contest_id: int, winners_count: int, config,
                 contest_prizes = result[0].split(',') if result and result[0] else []
             
             for position in range(1, winners_count + 1):
-                security_code = secrets.token_hex(16)
-                
                 prize_name = contest_prizes[position - 1] if position - 1 < len(contest_prizes) else f"Prize {position}"
+                prize_type = 'link' if prize_name.startswith(('http://', 'https://', 'www.', 't.me/')) else 'text'
                 logger.info(f"Creating prize {position}: {prize_name}")
                 
                 await cursor.execute("""
-                    INSERT INTO prizes (contest_id, position, reward_info, data, security_code)
+                    INSERT INTO contest_prizes (contest_id, position, prize_name, prize_type, prize_value)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (contest_id, position, prize_name, "", security_code))
+                """, (contest_id, position, prize_name, prize_type, prize_name))
             
             await conn.commit()
             logger.info(f"Created {winners_count} prize positions for contest {contest_id}")
@@ -148,14 +145,30 @@ async def assign_winner_to_prize(contest_id: int, position: int, user_id: int, c
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
+            # Check if prize position exists
             await cursor.execute("""
-                UPDATE prizes 
-                SET winner_user_id = %s 
-                WHERE contest_id = %s AND position = %s AND winner_user_id IS NULL
-            """, (user_id, contest_id, position))
+                SELECT id FROM contest_prizes 
+                WHERE contest_id = %s AND position = %s
+            """, (contest_id, position))
             
-            if cursor.rowcount == 0:
-                raise ValueError(f"Prize position {position} already assigned or not found")
+            if not await cursor.fetchone():
+                raise ValueError(f"Prize position {position} not found")
+            
+            # Check if already assigned
+            await cursor.execute("""
+                SELECT id FROM prize_claims 
+                WHERE contest_id = %s AND position = %s
+            """, (contest_id, position))
+            
+            if await cursor.fetchone():
+                raise ValueError(f"Prize position {position} already assigned")
+            
+            # Assign the winner
+            security_code = secrets.token_hex(16)
+            await cursor.execute("""
+                INSERT INTO prize_claims (contest_id, position, winner_user_id, security_code)
+                VALUES (%s, %s, %s, %s)
+            """, (contest_id, position, user_id, security_code))
             
             await conn.commit()
             logger.info(f"Assigned user {user_id} to prize position {position} in contest {contest_id}")
@@ -170,9 +183,10 @@ async def get_winner_prize(contest_id: int, user_id: int, config):
     try:
         async with conn.cursor() as cursor:
             await cursor.execute("""
-                SELECT position, reward_info, data, security_code, claimed_at
-                FROM prizes 
-                WHERE contest_id = %s AND winner_user_id = %s
+                SELECT cp.position, cp.prize_name, cp.prize_value, pc.security_code, pc.claimed_at
+                FROM contest_prizes cp
+                JOIN prize_claims pc ON cp.contest_id = pc.contest_id AND cp.position = pc.position
+                WHERE cp.contest_id = %s AND pc.winner_user_id = %s
             """, (contest_id, user_id))
             
             result = await cursor.fetchone()
@@ -196,7 +210,7 @@ async def mark_prize_as_claimed(contest_id: int, user_id: int, config):
     try:
         async with conn.cursor() as cursor:
             await cursor.execute("""
-                UPDATE prizes 
+                UPDATE prize_claims 
                 SET claimed_at = NOW() 
                 WHERE contest_id = %s AND winner_user_id = %s
             """, (contest_id, user_id))
@@ -213,20 +227,19 @@ async def set_prize_details(contest_id: int, position: int, reward_info: str, da
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
-            await cursor.execute("SELECT id FROM prizes WHERE contest_id = %s AND position = %s", (contest_id, position))
+            await cursor.execute("SELECT id FROM contest_prizes WHERE contest_id = %s AND position = %s", (contest_id, position))
             existing = await cursor.fetchone()
             
             if existing:
                 await cursor.execute(
-                    "UPDATE prizes SET reward_info = %s, data = %s WHERE contest_id = %s AND position = %s",
+                    "UPDATE contest_prizes SET prize_name = %s, prize_value = %s WHERE contest_id = %s AND position = %s",
                     (reward_info, data, contest_id, position)
                 )
             else:
-                import secrets
-                security_code = secrets.token_hex(16)
+                prize_type = 'link' if data.startswith(('http://', 'https://', 'www.', 't.me/')) else 'text'
                 await cursor.execute(
-                    "INSERT INTO prizes (contest_id, position, reward_info, data, security_code) VALUES (%s, %s, %s, %s, %s)",
-                    (contest_id, position, reward_info, data, security_code)
+                    "INSERT INTO contest_prizes (contest_id, position, prize_name, prize_type, prize_value) VALUES (%s, %s, %s, %s, %s)",
+                    (contest_id, position, reward_info, prize_type, data)
                 )
             await conn.commit()
             logger.info(f"Prize details set for contest {contest_id}, position {position}")
@@ -481,8 +494,6 @@ async def get_winner_prize_info(contest_id: int, user_id: int, config):
     finally:
         conn.close()
 
-async def mark_prize_as_claimed(contest_id: int, user_id: int, config):
-    pass
 
 async def is_prize_claimed(contest_id: int, position: int, config):
     conn = await get_db_connection(config)
