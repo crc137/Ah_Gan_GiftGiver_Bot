@@ -10,7 +10,7 @@
 <img alt="version" src="https://img.shields.io/badge/version-1.0.0-blue" style="margin: 0px 2px;">
 
 </div>
-
+<br />
 <div align="center">
   <p>A Telegram bot designed for managing giveaways and contests in group chats. It allows admins to create contests, start giveaways, track participants, automatically select winners after a specified duration, and handle prize claims. The bot uses a MySQL database for persistent storage of contest data, prizes, and giveaway state.</p>
 </div>
