@@ -418,6 +418,10 @@ async def add_contest(contest_name: str, duration: int, winners_count: int, priz
             await conn.commit()
             contest_id = cursor.lastrowid
             logger.info(f"Created contest {contest_id}: {contest_name}")
+            
+            from db import create_contest_prizes
+            await create_contest_prizes(contest_id, prizes, DB_CONFIG)
+            
             return contest_id
     except Exception as e:
         logger.error(f"Error creating contest: {e}")
@@ -572,13 +576,12 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     winners_count = min(winners_count, len(participants))
     selected_winners = random.sample(list(participants.values()), winners_count)
 
-    from db import create_prizes_for_contest, assign_winner_to_prize
-    await create_prizes_for_contest(current_contest_id, winners_count, DB_CONFIG, prizes)
+    from db import assign_winner_to_prize_position
     
     winners.clear()
     for i, winner in enumerate(selected_winners):
         position = i + 1  
-        await assign_winner_to_prize(current_contest_id, position, winner.id, DB_CONFIG)
+        await assign_winner_to_prize_position(current_contest_id, position, winner.id, DB_CONFIG)
         prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
         winners[winner.id] = prize_name
 
@@ -684,8 +687,8 @@ async def claim_command(message: types.Message):
     claimed_winners.add(user_id)
     prize = winners[user_id]
     
-    from db import get_winner_prize, mark_prize_as_claimed
-    winner_prize = await get_winner_prize(current_contest_id, user_id, DB_CONFIG) if current_contest_id else None
+    from db import get_winner_prize_info
+    winner_prize = await get_winner_prize_info(current_contest_id, user_id, DB_CONFIG) if current_contest_id else None
     
     if winner_prize:
         logger.info(f"Retrieved prize data for user {user_id} in contest {current_contest_id}: {winner_prize}")
@@ -700,22 +703,14 @@ async def claim_command(message: types.Message):
         position = winner_prize['position']
         position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏆"
         message_text += f"{position_emoji} You won {position}st place!\n"
+        message_text += f"🎁 Prize: {winner_prize['prize_name']}\n"
         
-        if winner_prize['reward_info'] and winner_prize['reward_info'].strip():
-            message_text += f"✨ Reward: {winner_prize['reward_info']}\n"
+        if winner_prize['prize_type'] == 'link':
+            builder.button(text="🎀 Claim Prize", url=winner_prize['prize_value'])
+            message_text += "✨ Click the button below to claim your prize!\n"
         else:
-            message_text += "✨ Reward: (coming soon...)\n"
+            message_text += f"✨ Prize Details: {winner_prize['prize_value']}\n"
         
-        if winner_prize['data'] and winner_prize['data'].strip():
-            data = winner_prize['data'].strip()
-            if is_url(data):
-                builder.button(text="🎀 Open Link", url=data)
-            elif is_data(data):
-                message_text += f"🔑 Data: `{data}`\n"
-            else:
-                message_text += f"🔑 Data: `{data}`\n"
-        
-        await mark_prize_as_claimed(current_contest_id, user_id, DB_CONFIG)
         message_text += "\nYou're amazing — stay cute and lucky! (≧◡≦)♡"
     else:
         if prize and prize.strip() and prize != "🎁":
@@ -1135,7 +1130,6 @@ async def stats_command(message: types.Message):
 
 @dp.message(Command("set_prize_data"))
 async def set_prize_data_command(message: types.Message):
-    """Команда для установки данных приза (только для админов)"""
     logger.info(f"Set prize data command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
@@ -1154,19 +1148,37 @@ async def set_prize_data_command(message: types.Message):
     
     args = shlex.split(message.text)[1:]
     if len(args) < 3:
-        await message.answer("Usage: /set_prize_data <contest_id> <position> <reward_info> <data>\n\nExample: /set_prize_data 1 1 \"100 USDT\" \"0x1234567890abcdef\"")
+        await message.answer("Usage: /set_prize_data <contest_id> <position> <prize_name> <prize_value>\n\nExample: /set_prize_data 1 1 \"100 USDT\" \"https://example.com/claim\"")
         return
     
     try:
         contest_id = int(args[0])
         position = int(args[1])
-        reward_info = args[2]
-        data = args[3] if len(args) > 3 else ""
+        prize_name = args[2]
+        prize_value = args[3] if len(args) > 3 else ""
         
-        await set_prize_details(contest_id, position, reward_info, data)
+        prize_type = 'link' if prize_value.startswith(('http://', 'https://', 'www.', 't.me/')) else 'text'
         
-        await message.answer(f"✅ Prize data updated for contest {contest_id}, position {position}:\n🎁 Reward: {reward_info}\n🔑 Data: {data}")
-        logger.info(f"Prize data updated for contest {contest_id} by user {message.from_user.id}")
+        from db import get_db_connection
+        conn = await get_db_connection(DB_CONFIG)
+        try:
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    UPDATE contest_prizes 
+                    SET prize_name = %s, prize_type = %s, prize_value = %s 
+                    WHERE contest_id = %s AND position = %s
+                """, (prize_name, prize_type, prize_value, contest_id, position))
+                
+                if cursor.rowcount == 0:
+                    await message.answer(f"❌ No prize found for contest {contest_id}, position {position}")
+                    return
+                
+                await conn.commit()
+            
+            await message.answer(f"✅ Prize updated for contest {contest_id}, position {position}:\n🎁 Name: {prize_name}\n🔗 Type: {prize_type}\n💎 Value: {prize_value}")
+            logger.info(f"Prize data updated for contest {contest_id} by user {message.from_user.id}")
+        finally:
+            conn.close()
         
     except ValueError as e:
         await message.answer(f"❌ Invalid parameters: {e}")
@@ -1177,7 +1189,6 @@ async def set_prize_data_command(message: types.Message):
 
 @dp.message(Command("prize_info"))
 async def prize_info_command(message: types.Message):
-    """Команда для просмотра информации о призах конкурса"""
     logger.info(f"Prize info command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
@@ -1202,16 +1213,17 @@ async def prize_info_command(message: types.Message):
     try:
         contest_id = int(args[0])
         
-        prize_details = await get_prize_details(contest_id)
+        from db import get_contest_prizes
+        prize_details = await get_contest_prizes(contest_id, DB_CONFIG)
         
         if prize_details:
             message_text = f"🎁 Prize Info for Contest {contest_id}:\n\n"
-            for i, prize in enumerate(prize_details, 1):
+            for prize in prize_details:
                 position_emoji = "🥇" if prize['position'] == 1 else "🥈" if prize['position'] == 2 else "🥉" if prize['position'] == 3 else "🏆"
                 message_text += f"{position_emoji} Position {prize['position']}:\n"
-                message_text += f"📝 Reward: {prize['reward_info']}\n"
-                message_text += f"🔑 Data: {prize['data']}\n"
-                message_text += f"✅ Status: {'Configured' if prize['data'] else 'Not configured'}\n\n"
+                message_text += f"📝 Prize: {prize['prize_name']}\n"
+                message_text += f"🔗 Type: {prize['prize_type']}\n"
+                message_text += f"💎 Value: {prize['prize_value']}\n\n"
         else:
             message_text = f"❌ No prize data found for contest {contest_id}"
         
@@ -1227,7 +1239,6 @@ async def prize_info_command(message: types.Message):
 
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
-    """Команда справки"""
     if message.chat.id not in ALLOWED_CHATS:
         await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
         return
