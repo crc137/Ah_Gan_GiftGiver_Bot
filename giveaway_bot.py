@@ -712,6 +712,11 @@ async def claim_command(message: types.Message):
     from db import get_winner_prize, mark_prize_as_claimed
     winner_prize = await get_winner_prize(current_contest_id, user_id, DB_CONFIG) if current_contest_id else None
     
+    if winner_prize:
+        logger.info(f"Retrieved prize data for user {user_id} in contest {current_contest_id}: {winner_prize}")
+    else:
+        logger.warning(f"No prize data found for user {user_id} in contest {current_contest_id}")
+    
     message_text = "🧁 Yay~ You made it! (✿◠‿◠)\nHere's your little gift 🎁\nHope it brings you a smile and a bit of luck 💖\n\n"
     
     builder = InlineKeyboardBuilder()
@@ -1144,6 +1149,136 @@ async def stats_command(message: types.Message):
         await message.answer(f"❌ Error getting stats: {e}")
         logger.error(f"Error getting stats: {e}")
 
+@dp.message(Command("set_prize_data"))
+async def set_prize_data_command(message: types.Message):
+    """Команда для установки данных приза (только для админов)"""
+    logger.info(f"Set prize data command by user {message.from_user.id} in chat {message.chat.id}")
+    
+    if message.chat.id not in ALLOWED_CHATS:
+        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        return
+    
+    try:
+        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if chat_member.status not in ["creator", "administrator"]:
+            await message.answer("Only admins can set prize data.")
+            return
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        await message.answer("Error checking admin status.")
+        return
+    
+    args = shlex.split(message.text)[1:]
+    if len(args) < 3:
+        await message.answer("Usage: /set_prize_data <contest_id> <position> <reward_info> <data>\n\nExample: /set_prize_data 1 1 \"100 USDT\" \"0x1234567890abcdef\"")
+        return
+    
+    try:
+        contest_id = int(args[0])
+        position = int(args[1])
+        reward_info = args[2]
+        data = args[3] if len(args) > 3 else ""
+        
+        from db import set_prize_details
+        await set_prize_details(contest_id, reward_info, data)
+        
+        await message.answer(f"✅ Prize data updated for contest {contest_id}, position {position}:\n🎁 Reward: {reward_info}\n🔑 Data: {data}")
+        logger.info(f"Prize data updated for contest {contest_id} by user {message.from_user.id}")
+        
+    except ValueError as e:
+        await message.answer(f"❌ Invalid parameters: {e}")
+        logger.error(f"Invalid prize data parameters: {e}")
+    except Exception as e:
+        await message.answer(f"❌ Error setting prize data: {e}")
+        logger.error(f"Error setting prize data: {e}")
+
+@dp.message(Command("prize_info"))
+async def prize_info_command(message: types.Message):
+    """Команда для просмотра информации о призах конкурса"""
+    logger.info(f"Prize info command by user {message.from_user.id} in chat {message.chat.id}")
+    
+    if message.chat.id not in ALLOWED_CHATS:
+        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        return
+    
+    try:
+        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if chat_member.status not in ["creator", "administrator"]:
+            await message.answer("Only admins can view prize info.")
+            return
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        await message.answer("Error checking admin status.")
+        return
+    
+    args = shlex.split(message.text)[1:]
+    if not args:
+        await message.answer("Usage: /prize_info <contest_id>\n\nExample: /prize_info 1")
+        return
+    
+    try:
+        contest_id = int(args[0])
+        
+        from db import get_prize_details
+        prize_details = await get_prize_details(contest_id)
+        
+        if prize_details:
+            message_text = f"🎁 Prize Info for Contest {contest_id}:\n\n"
+            message_text += f"📝 Reward: {prize_details['reward_info']}\n"
+            message_text += f"🔑 Data: {prize_details['data']}\n"
+            message_text += f"✅ Status: {'Configured' if prize_details['data'] else 'Not configured'}"
+        else:
+            message_text = f"❌ No prize data found for contest {contest_id}"
+        
+        await message.answer(message_text)
+        logger.info(f"Prize info requested for contest {contest_id}")
+        
+    except ValueError as e:
+        await message.answer(f"❌ Invalid contest ID: {e}")
+        logger.error(f"Invalid contest ID: {e}")
+    except Exception as e:
+        await message.answer(f"❌ Error getting prize info: {e}")
+        logger.error(f"Error getting prize info: {e}")
+
+@dp.message(Command("help"))
+async def help_command(message: types.Message):
+    """Команда справки"""
+    if message.chat.id not in ALLOWED_CHATS:
+        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        return
+    
+    help_text = """🤖 **Giveaway Bot Commands**
+
+**📋 Contest Management:**
+• `/create_contest <name> <duration> <winners> [prizes...] [image_url]` - Create contest
+• `/start_giveaway <contest_id>` - Start giveaway
+• `/contest <contest_id>` - Start contest (alias)
+• `/cancel_giveaway` - Cancel active giveaway
+• `/stats` - View giveaway statistics
+
+**🎁 Prize Management:**
+• `/set_prize_data <contest_id> <position> <reward_info> <data>` - Set prize data
+• `/prize_info <contest_id>` - View prize information
+
+**⏰ Duration Formats:**
+• `8:46` - Specific time (Europe/Tallinn, must be in future)
+• `7д` - 7 days (max 365)
+• `2ч` - 2 hours (max 8760)
+• `30мин` - 30 minutes (max 1440)
+• `7` - 7 days (max 365)
+
+**📸 Images:**
+• Attach image to message or provide URL
+• Supported: JPEG, PNG, GIF, WebP
+• Max size: 20MB
+
+**🔒 Admin Only:**
+• Contest creation and management
+• Prize data configuration
+• Statistics viewing"""
+    
+    await message.answer(help_text, parse_mode="Markdown")
+
 @dp.message(Command("cancel_giveaway"))
 async def cancel_giveaway_command(message: types.Message):
     global participants, winners, claimed_winners, current_contest_id, giveaway_message_id, giveaway_chat_id, giveaway_has_image
@@ -1209,7 +1344,7 @@ async def handle_any_message(message: types.Message):
     logger.info(f"ALLOWED_CHATS: {ALLOWED_CHATS}")
     logger.info(f"Chat in whitelist: {message.chat.id in ALLOWED_CHATS}")
     
-    if (not message.text or not (message.text.startswith('/claim') or message.text.startswith('/start_giveaway') or message.text.startswith('/contest') or message.text.startswith('/create_contest') or message.text.startswith('/stats'))) and message.chat.id not in ALLOWED_CHATS:
+    if (not message.text or not (message.text.startswith('/claim') or message.text.startswith('/start_giveaway') or message.text.startswith('/contest') or message.text.startswith('/create_contest') or message.text.startswith('/stats') or message.text.startswith('/set_prize_data') or message.text.startswith('/prize_info') or message.text.startswith('/help') or message.text.startswith('/cancel_giveaway'))) and message.chat.id not in ALLOWED_CHATS:
         logger.warning(f"Sending backward compatibility message for chat {message.chat.id}")
         await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
 
