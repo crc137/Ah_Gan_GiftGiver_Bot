@@ -85,6 +85,7 @@ current_contest_id = None
 giveaway_message_id = None
 giveaway_chat_id = None
 giveaway_has_image = False
+giveaway_task = None  
 
 def serialize_user(user: types.User) -> dict:
     return {
@@ -563,6 +564,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
             giveaway_message_id = None
             giveaway_chat_id = None
             giveaway_has_image = False
+            giveaway_task = None
             
             await save_state_to_db()
             return
@@ -650,6 +652,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
         giveaway_message_id = None
         giveaway_chat_id = None
         giveaway_has_image = False
+        giveaway_task = None
 
         await save_state_to_db()
         
@@ -659,6 +662,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
         giveaway_message_id = None
         giveaway_chat_id = None
         giveaway_has_image = False
+        giveaway_task = None
         await save_state_to_db()
 
 @dp.callback_query(lambda c: c.data == "claim")
@@ -837,6 +841,7 @@ async def start_giveaway_command(message: types.Message):
     giveaway_chat_id = sent_msg.chat.id
     await save_state_to_db()
     
+    global giveaway_task
     giveaway_task = asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
 
 
@@ -1336,6 +1341,7 @@ async def cancel_giveaway_command(message: types.Message):
         giveaway_message_id = None
         giveaway_chat_id = None
         giveaway_has_image = False
+        giveaway_task = None
         await save_state_to_db()
         
         await message.answer(f"Giveaway '{contest['name']}' has been cancelled.")
@@ -1367,7 +1373,8 @@ if __name__ == "__main__":
             contest = await get_contest_by_id(current_contest_id)
             if contest:
                 logger.info(f"Bot restored active giveaway: contest_id={current_contest_id}, participants={len(participants)}, winners={len(winners)}")
-                asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+                global giveaway_task
+                giveaway_task = asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
             else:
                 logger.warning("Contest not found during restore, clearing state.")
                 current_contest_id = None
