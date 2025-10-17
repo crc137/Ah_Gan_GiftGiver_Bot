@@ -333,7 +333,14 @@ def create_giveaway_start_message(contest_name: str, duration: int, winners_coun
     if valid_prizes:
         message += "🎁 Prizes:\n"
         for i, prize in enumerate(valid_prizes, 1):
-            position_emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
+            if i == 1:
+                position_emoji = "🥇"
+            elif i == 2:
+                position_emoji = "🥈"
+            elif i == 3:
+                position_emoji = "🥉"
+            else:
+                position_emoji = "🏅"
             message += f"{position_emoji} {prize}\n"
     else:
         message += "🎁 Prizes: 🎁 Mystery Prize\n"
@@ -361,7 +368,7 @@ async def get_db_connection(max_retries=3, retry_delay=5):
                 await asyncio.sleep(retry_delay)
             else:
                 logger.critical("Failed to connect to database after all retries")
-                raise Exception("Failed to connect to database after retries")
+                raise ConnectionError("Failed to connect to database after retries")
 
 async def init_database():
     conn = await get_db_connection()
@@ -629,7 +636,14 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
 
     for i, winner in enumerate(selected_winners):
         position = i + 1
-        position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏅"
+        if position == 1:
+            position_emoji = "🥇"
+        elif position == 2:
+            position_emoji = "🥈"
+        elif position == 3:
+            position_emoji = "🥉"
+        else:
+            position_emoji = "🏅"
         prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
         
         if winner.username:
@@ -730,7 +744,14 @@ async def claim_command(message: types.Message):
     builder = InlineKeyboardBuilder()
     
     position = winner_prize['position']
-    position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏅"
+    if position == 1:
+        position_emoji = "🥇"
+    elif position == 2:
+        position_emoji = "🥈"
+    elif position == 3:
+        position_emoji = "🥉"
+    else:
+        position_emoji = "🏅"
     message_text += f"{position_emoji} You won {_ordinal_suffix(position)} place!\n"
     message_text += f"🎁 Prize: {winner_prize['prize_name']}\n"
     
@@ -749,66 +770,26 @@ async def claim_command(message: types.Message):
     
     await save_state_to_db()
 
-@dp.message(Command("start_giveaway"))
-async def start_giveaway_command(message: types.Message):
-    logger.info(f"Start giveaway command by user {message.from_user.id} in chat {message.chat.id}")
-    logger.info(f"ALLOWED_CHATS: {ALLOWED_CHATS}")
-    logger.info(f"Chat type: {message.chat.type}")
-    
-    if message.chat.id not in ALLOWED_CHATS:
-        logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
-        await message.answer("This chat is not authorized for giveaways.")
-        return
-    
-    if await is_giveaway_running():
-        await message.answer("A giveaway is already running! Please wait for it to finish before starting a new one.")
-        logger.warning(f"Attempted to start giveaway while one is running by user {message.from_user.id}")
-        return
-    
+async def _check_admin_permissions(message: types.Message) -> bool:
     try:
         chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        if chat_member.status not in ["creator", "administrator"]:
-            await message.answer("This chat is not authorized for giveaways.")
-            return
+        return chat_member.status in ["creator", "administrator"]
     except Exception:
+        return False
+
+async def _list_available_contests(message: types.Message):
+    contests = await list_contests()
+    if not contests:
         await message.answer("This chat is not authorized for giveaways.")
         return
     
-    args = message.text.split()[1:]
-    if not args:
-        contests = await list_contests()
-        if not contests:
-            await message.answer("This chat is not authorized for giveaways.")
-            return
-        
-        text = "Available contests:\n"
-        for contest in contests:
-            text += f"ID {contest['id']}: {contest['name']} ({contest['duration']}s, {contest['winners_count']} winners)\n"
-        await message.answer(text)
-        return
-    
-    try:
-        contest_id = int(args[0])
-    except ValueError:
-        await message.answer("This chat is not authorized for giveaways.")
-        return
-    
-    contest = await get_contest_by_id(contest_id)
-    if not contest:
-        await message.answer("This chat is not authorized for giveaways.")
-        return
-    
-    global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
-    
-    participants.clear()
-    winners.clear()
-    claimed_winners.clear()
-    current_contest_id = contest_id
-    
-    giveaway_has_image = False 
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎁 Join", callback_data="join")
+    text = "Available contests:\n"
+    for contest in contests:
+        text += f"ID {contest['id']}: {contest['name']} ({contest['duration']}s, {contest['winners_count']} winners)\n"
+    await message.answer(text)
+
+async def _send_giveaway_message(message: types.Message, contest: dict, builder: InlineKeyboardBuilder):
+    global giveaway_has_image
     
     if contest['image_url']:
         try:
@@ -839,6 +820,58 @@ async def start_giveaway_command(message: types.Message):
             create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
             reply_markup=builder.as_markup()
         )
+    
+    return sent_msg
+
+@dp.message(Command("start_giveaway"))
+async def start_giveaway_command(message: types.Message):
+    logger.info(f"Start giveaway command by user {message.from_user.id} in chat {message.chat.id}")
+    logger.info(f"ALLOWED_CHATS: {ALLOWED_CHATS}")
+    logger.info(f"Chat type: {message.chat.type}")
+    
+    if message.chat.id not in ALLOWED_CHATS:
+        logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
+        await message.answer("This chat is not authorized for giveaways.")
+        return
+    
+    if await is_giveaway_running():
+        await message.answer("A giveaway is already running! Please wait for it to finish before starting a new one.")
+        logger.warning(f"Attempted to start giveaway while one is running by user {message.from_user.id}")
+        return
+    
+    if not await _check_admin_permissions(message):
+        await message.answer("This chat is not authorized for giveaways.")
+        return
+    
+    args = message.text.split()[1:]
+    if not args:
+        await _list_available_contests(message)
+        return
+    
+    try:
+        contest_id = int(args[0])
+    except ValueError:
+        await message.answer("This chat is not authorized for giveaways.")
+        return
+    
+    contest = await get_contest_by_id(contest_id)
+    if not contest:
+        await message.answer("This chat is not authorized for giveaways.")
+        return
+    
+    global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
+    
+    participants.clear()
+    winners.clear()
+    claimed_winners.clear()
+    current_contest_id = contest_id
+    
+    giveaway_has_image = False 
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎁 Join", callback_data="join")
+    
+    sent_msg = await _send_giveaway_message(message, contest, builder)
 
     giveaway_message_id = sent_msg.message_id
     giveaway_chat_id = sent_msg.chat.id
@@ -1241,7 +1274,14 @@ async def prize_info_command(message: types.Message):
         if prize_details:
             message_text = f"🎁 Prize Info for Contest {contest_id}:\n\n"
             for prize in prize_details:
-                position_emoji = "🥇" if prize['position'] == 1 else "🥈" if prize['position'] == 2 else "🥉" if prize['position'] == 3 else "🏆"
+                if prize['position'] == 1:
+                    position_emoji = "🥇"
+                elif prize['position'] == 2:
+                    position_emoji = "🥈"
+                elif prize['position'] == 3:
+                    position_emoji = "🥉"
+                else:
+                    position_emoji = "🏆"
                 message_text += f"{position_emoji} Position {prize['position']}:\n"
                 message_text += f"📝 Prize: {prize['prize_name']}\n"
                 message_text += f"🔗 Type: {prize['prize_type']}\n"
