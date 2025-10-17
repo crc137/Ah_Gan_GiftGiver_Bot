@@ -25,6 +25,7 @@ DAYS_CANNOT_EXCEED_365 = "Days cannot exceed 365"
 HOURS_CANNOT_EXCEED_8760 = "Hours cannot exceed 8760 (365 days)"
 MINUTES_CANNOT_EXCEED_1440 = "Minutes cannot exceed 1440 (24 hours)"
 MONTHS_CANNOT_EXCEED_12 = "Months cannot exceed 12"
+TOTAL_DURATION_CANNOT_EXCEED_365_DAYS = "Total duration cannot exceed 365 days"
 
 load_dotenv()
 
@@ -130,25 +131,31 @@ def _parse_days_format(duration_str: str) -> int:
     
     return days * 24 * 3600
 
+def _parse_months_part(part: str) -> int:
+    months = int(part[1:])
+    if months <= 0:
+        raise ValueError(MONTHS_MUST_BE_POSITIVE)
+    if months > 12:
+        raise ValueError(MONTHS_CANNOT_EXCEED_12)
+    return months * 30 * 24 * 3600
+
+def _parse_days_part(part: str) -> int:
+    days = int(part[1:])
+    if days <= 0:
+        raise ValueError(DAYS_MUST_BE_POSITIVE)
+    if days > 365:
+        raise ValueError(DAYS_CANNOT_EXCEED_365)
+    return days * 24 * 3600
+
 def _parse_combined_format(duration_str: str) -> int:
     parts = duration_str.split()
     total_seconds = 0
     
     for part in parts:
         if part.startswith('m'):
-            months = int(part[1:])
-            if months <= 0:
-                raise ValueError(MONTHS_MUST_BE_POSITIVE)
-            if months > 12:
-                raise ValueError(MONTHS_CANNOT_EXCEED_12)
-            total_seconds += months * 30 * 24 * 3600
+            total_seconds += _parse_months_part(part)
         elif part.startswith('d'):
-            days = int(part[1:])
-            if days <= 0:
-                raise ValueError(DAYS_MUST_BE_POSITIVE)
-            if days > 365:
-                raise ValueError(DAYS_CANNOT_EXCEED_365)
-            total_seconds += days * 24 * 3600
+            total_seconds += _parse_days_part(part)
     
     if total_seconds > 365 * 24 * 3600:
         raise ValueError(TOTAL_DURATION_CANNOT_EXCEED_365_DAYS)
