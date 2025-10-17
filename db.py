@@ -77,7 +77,11 @@ async def init_database(config):
                 )
             """)
             
-            await cursor.execute("INSERT IGNORE INTO giveaway_state (id) VALUES (1)")
+            await cursor.execute("""
+                INSERT IGNORE INTO giveaway_state (id, participants, winners, claimed_winners, 
+                giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id)
+                VALUES (1, '[]', '{}', '[]', NULL, NULL, FALSE, NULL)
+            """)
             
             await conn.commit()
             logger.info("Database tables initialized successfully")
