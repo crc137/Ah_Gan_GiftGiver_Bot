@@ -5,12 +5,17 @@ import multiprocessing
 import os
 import signal
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 
 def run_telegram_bot():
     try:
-        from giveaway_bot import main as bot_main
-        asyncio.run(bot_main())
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, "giveaway_bot.py"], 
+                              capture_output=False, text=True)
+        if result.returncode != 0:
+            print(f"Telegram bot exited with code {result.returncode}")
     except Exception as e:
         print(f"Error running Telegram bot: {e}")
         sys.exit(1)
@@ -30,6 +35,18 @@ def signal_handler(signum, frame):
 
 def main():
     print("Starting Giveaway Bot Services...")
+    
+    required_vars = ['TELEGRAM_TOKEN', 'DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME']
+    missing_vars = []
+    
+    for var in required_vars:
+        if not os.getenv(var):
+            missing_vars.append(var)
+    
+    if missing_vars:
+        print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
+        print("Please set these variables or copy env.example to .env and configure it.")
+        sys.exit(1)
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -66,7 +83,7 @@ def main():
                     print("Web interface process ended")
                     bot_future.cancel()
                     break
-                asyncio.sleep(1)
+                time.sleep(1)
                 
     except KeyboardInterrupt:
         print("\nShutting down services...")
