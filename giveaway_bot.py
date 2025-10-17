@@ -798,6 +798,27 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
 async def notify_winners(winners: list, contest_name: str):
     logger.info(f"Using giveaway_chat_id={giveaway_chat_id} (type={type(giveaway_chat_id)})")
     
+    try:
+        from db import get_contest_prizes
+        prizes = await get_contest_prizes(current_contest_id, DB_CONFIG)
+        if prizes:
+            import aiomysql
+            conn = await aiomysql.connect(**DB_CONFIG)
+            async with conn.cursor() as cursor:
+                await cursor.execute("""
+                    SELECT COUNT(*) FROM prize_claims 
+                    WHERE contest_id = %s
+                """, (current_contest_id,))
+                total_claims = (await cursor.fetchone())[0]
+                
+                if total_claims > 0:
+                    logger.info(f"Prize claims already exist for contest {current_contest_id}, skipping notifications...")
+                    conn.close()
+                    return
+            conn.close()
+    except Exception as e:
+        logger.warning(f"Could not check notification status: {e}")
+    
     group_title = f"ID {giveaway_chat_id}" if giveaway_chat_id else "the giveaway group"
     group_url = ""
     
