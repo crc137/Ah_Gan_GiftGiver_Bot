@@ -502,7 +502,7 @@ async def get_contest_by_id(contest_id: int):
     try:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "SELECT contest_name, duration, winners_count, prizes, image_url FROM contests WHERE id = %s",
+                "SELECT contest_name, duration, winners_count, prizes, image_url, group_title, group_url FROM contests WHERE id = %s",
                 (contest_id,)
             )
             result = await cursor.fetchone()
@@ -512,7 +512,9 @@ async def get_contest_by_id(contest_id: int):
                     'duration': result[1],
                     'winners_count': result[2],
                     'prizes': result[3].split(',') if result[3] else [],
-                    'image_url': result[4]
+                    'image_url': result[4],
+                    'group_title': result[5],
+                    'group_url': result[6]
                 }
                 is_valid, error_msg = validate_contest_params(
                     contest['duration'], 
@@ -530,7 +532,7 @@ async def get_contest_by_id(contest_id: int):
     finally:
         conn.close()
 
-async def add_contest(contest_name: str, duration: int, winners_count: int, prizes: list, image_url: str = None):
+async def add_contest(contest_name: str, duration: int, winners_count: int, prizes: list, image_url: str = None, group_title: str = None, group_url: str = None):
     contest_name = sanitize_string(contest_name)
     prizes = [sanitize_string(p) for p in prizes if p and sanitize_string(p)]
     image_url = sanitize_string(image_url) if image_url else None
@@ -543,8 +545,8 @@ async def add_contest(contest_name: str, duration: int, winners_count: int, priz
     try:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "INSERT INTO contests (contest_name, duration, winners_count, prizes, image_url) VALUES (%s, %s, %s, %s, %s)",
-                (contest_name, duration, winners_count, ','.join(prizes), image_url)
+                "INSERT INTO contests (contest_name, duration, winners_count, prizes, image_url, group_title, group_url) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (contest_name, duration, winners_count, ','.join(prizes), image_url, group_title, group_url)
             )
             await conn.commit()
             contest_id = cursor.lastrowid
@@ -800,8 +802,7 @@ async def notify_winners(winners: list, contest_name: str):
     group_url = ""
     
     try:
-        from db import get_contest_by_id
-        contest_info = await get_contest_by_id(current_contest_id, DB_CONFIG)
+        contest_info = await get_contest_by_id(current_contest_id)
         if contest_info and contest_info.get('group_title'):
             group_title = contest_info['group_title']
             group_url = contest_info.get('group_url', '')
