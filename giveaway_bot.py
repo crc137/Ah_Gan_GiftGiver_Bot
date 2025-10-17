@@ -102,7 +102,6 @@ giveaway_has_image = False
 giveaway_task = None  
 state_monitor_task = None  
 cleanup_task = None  
-countdown_task = None  
 restore_tasks = []  
 
 def serialize_user(user: types.User) -> dict:
@@ -639,82 +638,11 @@ async def join_callback(callback: types.CallbackQuery):
         await callback.answer("🎉 You have joined the giveaway! Wait for the results 🧸")
         await save_state_to_db()
 
-async def countdown_timer(duration: int, message_id: int, chat_id: int, has_image: bool):
-    remaining = duration
-    while remaining > 0:
-        await asyncio.sleep(60)  
-        remaining -= 60
-        
-        if remaining <= 0:
-            break
-            
-        hours = remaining // 3600
-        minutes = (remaining % 3600) // 60
-        seconds = remaining % 60
-        
-        if hours > 0:
-            time_str = f"{hours}h {minutes}m"
-        elif minutes > 0:
-            time_str = f"{minutes}m {seconds}s"
-        else:
-            time_str = f"{seconds}s"
-
-        try:
-            if has_image:
-                current_message = await bot.get_chat(chat_id).get_message(message_id)
-                if current_message and current_message.caption:
-                    original_caption = current_message.caption
-                    import re
-                    updated_caption = re.sub(r'⏰ Ends: .*', f'⏰ Ends: {time_str} remaining', original_caption)
-                    if updated_caption == original_caption:
-                        updated_caption = original_caption + f"\n\n⏳ Remaining: {time_str}"
-                    
-                    await safe_edit_message(
-                        bot.edit_message_caption,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        caption=updated_caption
-                    )
-            else:
-                current_message = await bot.get_chat(chat_id).get_message(message_id)
-                if current_message and current_message.text:
-                    original_text = current_message.text
-                    import re
-                    updated_text = re.sub(r'⏰ Ends: .*', f'⏰ Ends: {time_str} remaining', original_text)
-                    if updated_text == original_text:
-                        updated_text = original_text + f"\n\n⏳ Remaining: {time_str}"
-                    
-                    await safe_edit_message(
-                        bot.edit_message_text,
-                        chat_id=chat_id,
-                        message_id=message_id,
-                        text=updated_text
-                    )
-        except Exception as e:
-            logger.warning(f"Failed to update countdown in message: {e}")
-            countdown_text = f"⏳ Remaining {time_str}"
-            if has_image:
-                await safe_edit_message(
-                    bot.edit_message_caption,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    caption=countdown_text
-                )
-            else:
-                await safe_edit_message(
-                    bot.edit_message_text,
-                    chat_id=chat_id,
-                    message_id=message_id,
-                    text=countdown_text
-                )
 
 async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     global current_contest_id, giveaway_message_id, giveaway_chat_id, giveaway_has_image
     
     try:
-        if giveaway_message_id and giveaway_chat_id:
-            global countdown_task
-            countdown_task = asyncio.create_task(countdown_timer(duration, giveaway_message_id, giveaway_chat_id, giveaway_has_image))
         
         await asyncio.sleep(duration)
         if not participants:
