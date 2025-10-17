@@ -26,6 +26,21 @@ HOURS_CANNOT_EXCEED_8760 = "Hours cannot exceed 8760 (365 days)"
 MINUTES_CANNOT_EXCEED_1440 = "Minutes cannot exceed 1440 (24 hours)"
 MONTHS_CANNOT_EXCEED_12 = "Months cannot exceed 12"
 TOTAL_DURATION_CANNOT_EXCEED_365_DAYS = "Total duration cannot exceed 365 days"
+ERROR_CHECKING_ADMIN_STATUS = "Error checking admin status."
+CHAT_NOT_AUTHORIZED = "This chat is not authorized for giveaways."
+NOBODY_JOINED_GIVEAWAY = "😿 Oh no, nobody joined the giveaway…"
+USAGE_CREATE_CONTEST = (
+    "Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\n"
+    "Duration formats:\n"
+    "• 7D, 7Days - 7 days (max 365)\n"
+    "• 1M, 1Month - 1 month (max 12)\n"
+    "• 2H, 2Hours - 2 hours (max 8760)\n"
+    "• 30M, 30Minutes - 30 minutes (max 1440)\n"
+    "• 7 - 7 days (max 365)\n"
+    "• 50 - 50 days (max 365)\n"
+    "• 8:46 - specific time (Europe/Tallinn, must be in future)\n\n"
+    "You can attach an image or provide image_url!"
+)
 
 load_dotenv()
 
@@ -236,19 +251,19 @@ def parse_duration_input(duration_str: str) -> int:
 
 def format_duration(duration_seconds: int) -> str:
     if duration_seconds < 60:
-        return f"{duration_seconds} секунд"
+        return f"{duration_seconds} seconds"
     elif duration_seconds < 3600:
         minutes = duration_seconds // 60
-        return f"{minutes} минут"
+        return f"{minutes} minutes"
     elif duration_seconds < 86400:
         hours = duration_seconds // 3600
-        return f"{hours} часов"
+        return f"{hours} hours"
     elif duration_seconds < 2592000:  
         days = duration_seconds // 86400
-        return f"{days} дней"
+        return f"{days} days"
     else:
         months = duration_seconds // (30 * 86400)
-        return f"{months} месяцев"
+        return f"{months} months"
 
 def is_safe_link(link: str) -> bool:
     if not link:
@@ -592,20 +607,20 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
                 await bot.edit_message_caption(
                     chat_id=giveaway_chat_id,
                     message_id=giveaway_message_id,
-                    caption="😿 Oh no, nobody joined the giveaway…"
+                    caption=NOBODY_JOINED_GIVEAWAY
                 )
             except Exception as e:
                 logger.warning(f"Failed to edit caption for no participants, falling back to text edit: {e}")
                 await bot.edit_message_text(
                     chat_id=giveaway_chat_id,
                     message_id=giveaway_message_id,
-                    text="😿 Oh no, nobody joined the giveaway…"
+                    text=NOBODY_JOINED_GIVEAWAY
                 )
         else:
             await bot.edit_message_text(
                 chat_id=giveaway_chat_id,
                 message_id=giveaway_message_id,
-                text="😿 Oh no, nobody joined the giveaway…"
+                text=NOBODY_JOINED_GIVEAWAY
             )
         current_contest_id = None
         giveaway_message_id = None
@@ -780,7 +795,7 @@ async def _check_admin_permissions(message: types.Message) -> bool:
 async def _list_available_contests(message: types.Message):
     contests = await list_contests()
     if not contests:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     text = "Available contests:\n"
@@ -831,7 +846,7 @@ async def start_giveaway_command(message: types.Message):
     
     if message.chat.id not in ALLOWED_CHATS:
         logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     if is_giveaway_running():
@@ -840,7 +855,7 @@ async def start_giveaway_command(message: types.Message):
         return
     
     if not await _check_admin_permissions(message):
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     args = message.text.split()[1:]
@@ -851,12 +866,12 @@ async def start_giveaway_command(message: types.Message):
     try:
         contest_id = int(args[0])
     except ValueError:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     contest = await get_contest_by_id(contest_id)
     if not contest:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
@@ -877,94 +892,99 @@ async def start_giveaway_command(message: types.Message):
     giveaway_chat_id = sent_msg.chat.id
     await save_state_to_db()
     
-    asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+    giveaway_task = asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
 
-@dp.message(Command("contest"))
-async def contest_command(message: types.Message):
-    if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("This chat is not authorized for giveaways.")
+async def _list_available_contests(message: types.Message) -> None:
+    contests = await list_contests()
+    if not contests:
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
+    
+    text = "Available contests:\n"
+    for contest in contests:
+        text += f"ID {contest['id']}: {contest['name']} ({contest['duration']}s, {contest['winners_count']} winners)\n"
+    await message.answer(text)
+
+async def _send_giveaway_message(message: types.Message, contest: dict, builder: InlineKeyboardBuilder) -> types.Message:
+    if not contest['image_url']:
+        return await message.answer(
+            create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
+            reply_markup=builder.as_markup()
+        )
     
     try:
-        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        if chat_member.status not in ["creator", "administrator"]:
-            await message.answer("This chat is not authorized for giveaways.")
-            return
-    except Exception:
-        await message.answer("This chat is not authorized for giveaways.")
-        return
-    
-    args = message.text.split()[1:]
-    if not args:
-        contests = await list_contests()
-        if not contests:
-            await message.answer("This chat is not authorized for giveaways.")
-            return
-        
-        text = "Available contests:\n"
-        for contest in contests:
-            text += f"ID {contest['id']}: {contest['name']} ({contest['duration']}s, {contest['winners_count']} winners)\n"
-        await message.answer(text)
-        return
-    
-    try:
-        contest_id = int(args[0])
-    except ValueError:
-        await message.answer("This chat is not authorized for giveaways.")
-        return
-    
-    contest = await get_contest_by_id(contest_id)
-    if not contest:
-        await message.answer("This chat is not authorized for giveaways.")
-        return
-    
+        photo_file = await download_image(contest['image_url'])
+        if photo_file is not None:
+            return await message.answer_photo(
+                photo=photo_file,
+                caption=create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
+                reply_markup=builder.as_markup()
+            )
+        else:
+            return await message.answer(
+                create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
+                reply_markup=builder.as_markup()
+            )
+    except Exception as e:
+        logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
+        warning_msg = "The image is in an unsupported format (AVIF/HEIC). The contest has been created without an image.\n\n"
+        return await message.answer(
+            warning_msg + create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
+            reply_markup=builder.as_markup()
+        )
+
+async def _initialize_giveaway_state(contest_id: int) -> None:
     global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
     
     participants.clear()
     winners.clear()
     claimed_winners.clear()
     current_contest_id = contest_id
+    giveaway_has_image = False
+
+@dp.message(Command("contest"))
+async def contest_command(message: types.Message):
+    if message.chat.id not in ALLOWED_CHATS:
+        await message.answer(CHAT_NOT_AUTHORIZED)
+        return
     
-    giveaway_has_image = False 
+    try:
+        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if chat_member.status not in ["creator", "administrator"]:
+            await message.answer(CHAT_NOT_AUTHORIZED)
+            return
+    except Exception:
+        await message.answer(CHAT_NOT_AUTHORIZED)
+        return
+    
+    args = message.text.split()[1:]
+    if not args:
+        await _list_available_contests(message)
+        return
+    
+    try:
+        contest_id = int(args[0])
+    except ValueError:
+        await message.answer(CHAT_NOT_AUTHORIZED)
+        return
+    
+    contest = await get_contest_by_id(contest_id)
+    if not contest:
+        await message.answer(CHAT_NOT_AUTHORIZED)
+        return
+    
+    await _initialize_giveaway_state(contest_id)
     
     builder = InlineKeyboardBuilder()
     builder.button(text="🎁 Join", callback_data="join")
     
-    if contest['image_url']:
-        try:
-            photo_file = await download_image(contest['image_url'])
-            if photo_file is not None:
-                sent_msg = await message.answer_photo(
-                    photo=photo_file,
-                    caption=create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-                    reply_markup=builder.as_markup()
-                )
-                giveaway_has_image = True
-            else:
-                sent_msg = await message.answer(
-                    create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-                    reply_markup=builder.as_markup()
-                )
-                giveaway_has_image = False
-        except Exception as e:
-            logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
-            warning_msg = "The image is in an unsupported format (AVIF/HEIC). The contest has been created without an image.\n\n"
-            sent_msg = await message.answer(
-                warning_msg + create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-                reply_markup=builder.as_markup()
-            )
-            giveaway_has_image = False
-    else:
-        sent_msg = await message.answer(
-            create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-            reply_markup=builder.as_markup()
-        )
+    sent_msg = await _send_giveaway_message(message, contest, builder)
 
     giveaway_message_id = sent_msg.message_id
     giveaway_chat_id = sent_msg.chat.id
     await save_state_to_db()
     
-    asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+    giveaway_task = asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
 
 def _validate_image_url(url: str) -> bool:
     if not url or not is_safe_link(url):
@@ -974,7 +994,7 @@ def _validate_image_url(url: str) -> bool:
 
 def _get_http_headers() -> dict:
     return {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/91.0.4472.124 Safari/537.36',
         'Accept': 'image/*,*/*;q=0.8'
     }
 
@@ -1005,7 +1025,7 @@ def _validate_downloaded_data(data: bytes, url: str) -> bool:
         return False
     return True
 
-def _detect_image_format(data: bytes, content_type: str, url: str) -> str | None:
+def _detect_image_format(data: bytes, url: str) -> str | None:
     if data.startswith(b'\xff\xd8\xff'):
         return 'jpeg'
     elif data.startswith(b'\x89PNG\r\n\x1a\n'):
@@ -1071,14 +1091,13 @@ async def download_image(url: str) -> BufferedInputFile | None:
                 if not _validate_downloaded_data(data, url):
                     return None
                     
-                supported_formats = ['jpeg', 'jpg', 'png', 'gif', 'webp']
                 subtype = content_type.split("/", 1)[1].split(';')[0] if "/" in content_type else "jpg"
                 logger.info(f"Image subtype from Content-Type: {subtype}")
                 
                 if not _validate_image_format(subtype, url):
                     return None
                 
-                actual_format = _detect_image_format(data, content_type, url)
+                actual_format = _detect_image_format(data, url)
                 if actual_format is None:
                     return None
                 
@@ -1096,6 +1115,72 @@ async def download_image(url: str) -> BufferedInputFile | None:
         logger.warning(f"Unexpected error downloading image from {url}: {e}")
         return None
 
+async def _check_admin_permissions(message: types.Message) -> bool:
+    try:
+        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if chat_member.status not in ["creator", "administrator"]:
+            await message.answer("Only admins can create contests.")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
+        return False
+
+async def _get_attached_image_url(message: types.Message) -> str | None:
+    if not message.photo:
+        return None
+    photo = message.photo[-1]
+    file_info = await bot.get_file(photo.file_id)
+    image_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
+    logger.info(f"Image attached: {image_url}")
+    return image_url
+
+def _is_image_url(url: str) -> bool:
+    if not is_safe_link(url):
+        return False
+    return any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp'])
+
+def _is_potential_image_url(url: str) -> bool:
+    return any(keyword in url.lower() for keyword in ['image', 'photo', 'img'])
+
+def _process_remaining_args(remaining_args: list) -> tuple[list, str | None]:
+    prizes = []
+    url_image = None
+    
+    for arg in remaining_args:
+        logger.info(f"Processing arg: '{arg}'")
+        if is_safe_link(arg):
+            if _is_image_url(arg):
+                url_image = arg
+                logger.info(f"Detected image URL: {arg}")
+            elif _is_potential_image_url(arg):
+                url_image = arg
+                logger.info(f"Detected potential image URL (no extension): {arg}")
+            else:
+                logger.warning(f"URL does not appear to be an image: {arg}")
+                prizes.append(arg) 
+        else:
+            prizes.append(arg)
+            logger.info(f"Added prize: '{arg}'")
+    
+    return prizes, url_image
+
+async def _create_contest_response(message: types.Message, name: str, duration: int, winners_count: int, prizes: list, 
+                                 image_url: str | None, url_image: str | None) -> None:
+    final_image_url = image_url if image_url else url_image
+    
+    from db import add_contest
+    contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url)
+    
+    duration_formatted = format_duration(duration)
+    response_text = f"Contest '{name}' created with ID {contest_id}.\nDuration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
+    if final_image_url:
+        response_text += f"\nImage: {final_image_url}"
+    
+    await message.answer(response_text)
+    logger.info(f"Created contest {contest_id}: {name} with image: {final_image_url}")
+
 @dp.message(Command("create_contest"))
 async def create_contest_command(message: types.Message):
     logger.info(f"Create contest command by user {message.from_user.id} in chat {message.chat.id}")
@@ -1104,32 +1189,20 @@ async def create_contest_command(message: types.Message):
     
     if message.chat.id not in ALLOWED_CHATS:
         logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
-    try:
-        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        if chat_member.status not in ["creator", "administrator"]:
-            await message.answer("Only admins can create contests.")
-            return
-    except Exception as e:
-        logger.error(f"Error checking admin status: {e}")
-        await message.answer("Error checking admin status.")
+    if not await _check_admin_permissions(message):
         return
     
-    image_url = None
-    if message.photo:
-        photo = message.photo[-1]
-        file_info = await bot.get_file(photo.file_id)
-        image_url = f"https://api.telegram.org/file/bot{TOKEN}/{file_info.file_path}"
-        logger.info(f"Image attached: {image_url}")
+    image_url = await _get_attached_image_url(message)
     
     args = shlex.split(message.text)[1:]
     logger.info(f"Parsed args: {args}")
     logger.info(f"Number of args: {len(args)}")
     
     if len(args) < 3:
-        await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\nDuration formats:\n• 7д, 7дней - 7 days (max 365)\n• 1м, 1месяц - 1 month (max 12)\n• 2ч, 2часа - 2 hours (max 8760)\n• 30мин - 30 minutes (max 1440)\n• 7 - 7 days (max 365)\n• 50 - 50 days (max 365)\n• 8:46 - specific time (Europe/Tallinn, must be in future)\n\nYou can attach an image or provide image_url!")
+        await message.answer(USAGE_CREATE_CONTEST)
         return
     
     try:
@@ -1139,40 +1212,13 @@ async def create_contest_command(message: types.Message):
         
         remaining_args = args[3:] if len(args) > 3 else []
         logger.info(f"Remaining args for prizes: {remaining_args}")
-        prizes = []
-        url_image = None
         
-        for arg in remaining_args:
-            logger.info(f"Processing arg: '{arg}'")
-            if is_safe_link(arg):
-                if any(ext in arg.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
-                    url_image = arg
-                    logger.info(f"Detected image URL: {arg}")
-                else:
-                    if 'image' in arg.lower() or 'photo' in arg.lower() or 'img' in arg.lower():
-                        url_image = arg
-                        logger.info(f"Detected potential image URL (no extension): {arg}")
-                    else:
-                        logger.warning(f"URL does not appear to be an image: {arg}")
-                        prizes.append(arg) 
-            else:
-                prizes.append(arg)
-                logger.info(f"Added prize: '{arg}'")
+        prizes, url_image = _process_remaining_args(remaining_args)
         
         logger.info(f"Final prizes list: {prizes}")
         logger.info(f"Final image URL: {url_image}")
-        final_image_url = image_url if image_url else url_image
         
-        from db import add_contest
-        contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url)
-        
-        duration_formatted = format_duration(duration)
-        response_text = f"Contest '{name}' created with ID {contest_id}.\nDuration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
-        if final_image_url:
-            response_text += f"\nImage: {final_image_url}"
-        
-        await message.answer(response_text)
-        logger.info(f"Created contest {contest_id}: {name} with image: {final_image_url}")
+        await _create_contest_response(message, name, duration, winners_count, prizes, image_url, url_image)
     except ValueError as e:
         await message.answer(f"Invalid parameters: {e}")
         logger.error(f"Invalid contest creation parameters: {e}")
@@ -1185,7 +1231,7 @@ async def stats_command(message: types.Message):
     logger.info(f"Stats command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     try:
@@ -1195,7 +1241,7 @@ async def stats_command(message: types.Message):
             return
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
-        await message.answer("Error checking admin status.")
+        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
         return
     
     if not current_contest_id:
@@ -1227,7 +1273,7 @@ async def set_prize_data_command(message: types.Message):
     logger.info(f"Set prize data command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     try:
@@ -1237,7 +1283,7 @@ async def set_prize_data_command(message: types.Message):
             return
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
-        await message.answer("Error checking admin status.")
+        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
         return
     
     args = shlex.split(message.text)[1:]
@@ -1286,7 +1332,7 @@ async def prize_info_command(message: types.Message):
     logger.info(f"Prize info command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     try:
@@ -1296,7 +1342,7 @@ async def prize_info_command(message: types.Message):
             return
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
-        await message.answer("Error checking admin status.")
+        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
         return
     
     args = shlex.split(message.text)[1:]
@@ -1341,7 +1387,7 @@ async def prize_info_command(message: types.Message):
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     help_text = """🤖 **Giveaway Bot Commands**
@@ -1383,7 +1429,7 @@ async def cancel_giveaway_command(message: types.Message):
     logger.info(f"Cancel giveaway command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
     try:
@@ -1393,7 +1439,7 @@ async def cancel_giveaway_command(message: types.Message):
             return
     except Exception as e:
         logger.error(f"Error checking admin status: {e}")
-        await message.answer("Error checking admin status.")
+        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
         return
     
     if not is_giveaway_running():
@@ -1443,7 +1489,7 @@ async def handle_any_message(message: types.Message):
     
     if (not message.text or not (message.text.startswith('/claim') or message.text.startswith('/start_giveaway') or message.text.startswith('/contest') or message.text.startswith('/create_contest') or message.text.startswith('/stats') or message.text.startswith('/set_prize_data') or message.text.startswith('/prize_info') or message.text.startswith('/help') or message.text.startswith('/cancel_giveaway'))) and message.chat.id not in ALLOWED_CHATS:
         logger.warning(f"Sending backward compatibility message for chat {message.chat.id}")
-        await message.answer("This chat is not authorized for giveaways.")
+        await message.answer(CHAT_NOT_AUTHORIZED)
 
 if __name__ == "__main__":
     async def main():   
