@@ -1,7 +1,7 @@
 #! /usr/bin/env python3
 
 import asyncio
-import random
+import secrets
 import shlex
 import json
 import os
@@ -213,8 +213,23 @@ def format_duration(duration_seconds: int) -> str:
         months = duration_seconds // (30 * 86400)
         return f"{months} месяцев"
 
+def is_safe_link(link: str) -> bool:
+    """Check if link is safe (only HTTPS, t.me, or tg:// protocols)"""
+    if not link:
+        return False
+    return link.startswith(('https://', 't.me/', 'tg://'))
+
 def is_url(text: str) -> bool:
-    return text.startswith(('http://', 'https://', 'www.', 't.me/', 'tg://'))
+    """Legacy function - use is_safe_link() instead"""
+    return is_safe_link(text)
+
+def _ordinal_suffix(n: int) -> str:
+    """Get ordinal suffix for a number (1st, 2nd, 3rd, 4th, etc.)"""
+    if 10 <= n % 100 <= 20:
+        suffix = 'th'
+    else:
+        suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+    return f"{n}{suffix}"
 
 def is_data(text: str) -> bool:
     data_patterns = [
@@ -288,7 +303,7 @@ def create_giveaway_start_message(contest_name: str, duration: int, winners_coun
     else:
         message += f"🎁 Prizes: 🎁 Mystery Prize\n"
     
-    message += f"\n\n 🏆 Winners: {winners_count}\n\n"
+    message += f"\n 🏆 Winners: {winners_count}\n\n"
     message += "📌 How to participate:\n"
     message += "(｡･ω･｡) Tap the \"🎁 Join\" button, sweetie!\n"
     message += "(*≧ω≦) Sit tight until the giveaway ends!\n"
@@ -325,21 +340,6 @@ async def init_database():
                 )
             """)
             
-            await cursor.execute("""
-                CREATE TABLE IF NOT EXISTS prizes (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    contest_id INT NOT NULL,
-                    position INT NOT NULL,
-                    reward_info VARCHAR(255) NOT NULL,
-                    data TEXT NOT NULL,
-                    winner_user_id BIGINT,
-                    claimed_at TIMESTAMP NULL,
-                    security_code VARCHAR(32) NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (contest_id) REFERENCES contests(id) ON DELETE CASCADE,
-                    UNIQUE KEY unique_contest_position (contest_id, position)
-                )
-            """)
             
             await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS giveaway_state (
@@ -357,14 +357,6 @@ async def init_database():
             await conn.commit()
     finally:
         conn.close()
-
-async def get_prize_details(contest_id: int):
-    from db import get_prize_details as db_get_prize_details
-    return await db_get_prize_details(contest_id, DB_CONFIG)
-
-async def set_prize_details(contest_id: int, position: int, reward_info: str, data: str):
-    from db import set_prize_details as db_set_prize_details
-    return await db_set_prize_details(contest_id, position, reward_info, data, DB_CONFIG)
 
 async def get_contest_by_id(contest_id: int):
     conn = await get_db_connection()
@@ -503,6 +495,8 @@ async def load_state_from_db():
                 giveaway_chat_id = result[4]
                 giveaway_has_image = bool(result[5])
                 current_contest_id = result[6]
+                
+                logger.info(f"Restored state: contest_id={current_contest_id}, participants={len(participants)}, winners={len(winners)}")
             else:
                 participants = {}
                 winners = {}
@@ -511,7 +505,9 @@ async def load_state_from_db():
                 giveaway_chat_id = None
                 giveaway_has_image = False
                 current_contest_id = None
-    except Exception:
+                logger.info("No existing state found, starting fresh")
+    except Exception as e:
+        logger.error(f"Error loading state from database: {e}")
         participants = {}
         winners = {}
         claimed_winners = set()
@@ -527,7 +523,7 @@ async def join_callback(callback: types.CallbackQuery):
     user = callback.from_user
 
     if callback.message.chat.id not in ALLOWED_CHATS:
-        await callback.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.", show_alert=True)
+        await callback.answer("This chat is not authorized for giveaways.", show_alert=True)
         return
 
     if user.is_bot:
@@ -574,7 +570,8 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
         return
 
     winners_count = min(winners_count, len(participants))
-    selected_winners = random.sample(list(participants.values()), winners_count)
+    secure_random = secrets.SystemRandom()
+    selected_winners = secure_random.sample(list(participants.values()), winners_count)
 
     from db import assign_winner_to_prize_position
     
@@ -593,7 +590,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
 
     for i, winner in enumerate(selected_winners):
         position = i + 1
-        position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏆"
+        position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏅"
         prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
         
         if winner.username:
@@ -605,7 +602,7 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
             else:
                 display_name = f"[Anonymous](tg://user?id={winner.id})"
         
-        text += f"{position_emoji} {position}st place: {display_name} - {prize_name}\n"
+        text += f"{position_emoji} {_ordinal_suffix(position)} place: {display_name} - {prize_name}\n"
 
     text += (
         "\nTap the button below to claim your prize 🎁\n"
@@ -656,7 +653,7 @@ async def claim_prize(callback: types.CallbackQuery):
     user_id = callback.from_user.id
 
     if callback.message.chat.id not in ALLOWED_CHATS:
-        await callback.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.", show_alert=True)
+        await callback.answer("This chat is not authorized for giveaways.", show_alert=True)
         return
 
     if user_id not in winners:
@@ -676,49 +673,35 @@ async def claim_command(message: types.Message):
         await message.answer("💬 To claim your reward, please send the /claim command to the bot in a private chat! 🎁")
         return
     
-    if user_id not in winners:
-        await message.answer("😿 Sorry, you are not a winner in any active giveaway.")
+    from db import get_latest_unclaimed_prize_for_user, mark_prize_as_claimed
+    
+    winner_prize = await get_latest_unclaimed_prize_for_user(user_id, DB_CONFIG)
+    
+    if not winner_prize:
+        await message.answer("😿 Sorry, you don't have any unclaimed prizes.")
         return
     
-    if user_id in claimed_winners:
-        await message.answer("💕 You already claimed your prize!")
+    success = await mark_prize_as_claimed(winner_prize['contest_id'], user_id, DB_CONFIG)
+    if not success:
+        await message.answer("Error claiming prize. Please try again later.")
         return
-    
-    claimed_winners.add(user_id)
-    prize = winners[user_id]
-    
-    from db import get_winner_prize_info
-    winner_prize = await get_winner_prize_info(current_contest_id, user_id, DB_CONFIG) if current_contest_id else None
-    
-    if winner_prize:
-        logger.info(f"Retrieved prize data for user {user_id} in contest {current_contest_id}: {winner_prize}")
-    else:
-        logger.warning(f"No prize data found for user {user_id} in contest {current_contest_id}")
     
     message_text = "🧁 Yay~ You made it! (✿◠‿◠)\nHere's your little gift 🎁\nHope it brings you a smile and a bit of luck 💖\n\n"
     
     builder = InlineKeyboardBuilder()
     
-    if winner_prize:
-        position = winner_prize['position']
-        position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏆"
-        message_text += f"{position_emoji} You won {position}st place!\n"
-        message_text += f"🎁 Prize: {winner_prize['prize_name']}\n"
-        
-        if winner_prize['prize_type'] == 'link':
-            builder.button(text="🎀 Claim Prize", url=winner_prize['prize_value'])
-            message_text += "✨ Click the button below to claim your prize!\n"
-        else:
-            message_text += f"✨ Prize Details: {winner_prize['prize_value']}\n"
-        
-        message_text += "\nYou're amazing — stay cute and lucky! (≧◡≦)♡"
+    position = winner_prize['position']
+    position_emoji = "🥇" if position == 1 else "🥈" if position == 2 else "🥉" if position == 3 else "🏅"
+    message_text += f"{position_emoji} You won {_ordinal_suffix(position)} place!\n"
+    message_text += f"🎁 Prize: {winner_prize['prize_name']}\n"
+    
+    if winner_prize['prize_type'] == 'link':
+        builder.button(text="🎀 Claim Prize", url=winner_prize['prize_value'])
+        message_text += "✨ Click the button below to claim your prize!\n"
     else:
-        if prize and prize.strip() and prize != "🎁":
-            message_text += f"🎀 Reward: {prize}\n"
-        else:
-            message_text += "✨ Reward: (coming soon...)\n"
-        
-        message_text += "\nThank you for your patience — you're the sweetest! (✿◠‿◠)"
+        message_text += f"✨ Prize Details: {winner_prize['prize_value']}\n"
+    
+    message_text += "\nYou're amazing — stay cute and lucky! (≧◡≦)♡"
     
     if builder.buttons:
         await message.answer(message_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
@@ -735,28 +718,28 @@ async def start_giveaway_command(message: types.Message):
     
     if message.chat.id not in ALLOWED_CHATS:
         logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     if await is_giveaway_running():
-        await message.answer("🚫 A giveaway is already running! Please wait for it to finish before starting a new one.")
+        await message.answer("A giveaway is already running! Please wait for it to finish before starting a new one.")
         logger.warning(f"Attempted to start giveaway while one is running by user {message.from_user.id}")
         return
     
     try:
         chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
         if chat_member.status not in ["creator", "administrator"]:
-            await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+            await message.answer("This chat is not authorized for giveaways.")
             return
     except Exception:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     args = message.text.split()[1:]
     if not args:
         contests = await list_contests()
         if not contests:
-            await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+            await message.answer("This chat is not authorized for giveaways.")
             return
         
         text = "Available contests:\n"
@@ -768,12 +751,12 @@ async def start_giveaway_command(message: types.Message):
     try:
         contest_id = int(args[0])
     except ValueError:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     contest = await get_contest_by_id(contest_id)
     if not contest:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
@@ -827,23 +810,23 @@ async def start_giveaway_command(message: types.Message):
 @dp.message(Command("contest"))
 async def contest_command(message: types.Message):
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     try:
         chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
         if chat_member.status not in ["creator", "administrator"]:
-            await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+            await message.answer("This chat is not authorized for giveaways.")
             return
     except Exception:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     args = message.text.split()[1:]
     if not args:
         contests = await list_contests()
         if not contests:
-            await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+            await message.answer("This chat is not authorized for giveaways.")
             return
         
         text = "Available contests:\n"
@@ -855,12 +838,12 @@ async def contest_command(message: types.Message):
     try:
         contest_id = int(args[0])
     except ValueError:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     contest = await get_contest_by_id(contest_id)
     if not contest:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
@@ -915,7 +898,7 @@ async def download_image(url: str) -> BufferedInputFile | None:
     logger.info(f"Starting image download from: {url}")
     
     try:
-        if not url or not url.startswith(('http://', 'https://')):
+        if not url or not is_safe_link(url):
             logger.warning(f"Invalid URL format: {url}")
             return None
             
@@ -1010,7 +993,7 @@ async def create_contest_command(message: types.Message):
     
     if message.chat.id not in ALLOWED_CHATS:
         logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     try:
@@ -1035,7 +1018,7 @@ async def create_contest_command(message: types.Message):
     logger.info(f"Number of args: {len(args)}")
     
     if len(args) < 3:
-        await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\n⏰ Duration formats:\n• 7д, 7дней - 7 days (max 365)\n• 1м, 1месяц - 1 month (max 12)\n• 2ч, 2часа - 2 hours (max 8760)\n• 30мин - 30 minutes (max 1440)\n• 7 - 7 days (max 365)\n• 50 - 50 days (max 365)\n• 8:46 - specific time (Europe/Tallinn, must be in future)\n\n📸 You can attach an image or provide image_url!")
+        await message.answer("Usage: /create_contest <name> <duration> <winners_count> [prizes...] [image_url]\n\nDuration formats:\n• 7д, 7дней - 7 days (max 365)\n• 1м, 1месяц - 1 month (max 12)\n• 2ч, 2часа - 2 hours (max 8760)\n• 30мин - 30 minutes (max 1440)\n• 7 - 7 days (max 365)\n• 50 - 50 days (max 365)\n• 8:46 - specific time (Europe/Tallinn, must be in future)\n\nYou can attach an image or provide image_url!")
         return
     
     try:
@@ -1050,7 +1033,7 @@ async def create_contest_command(message: types.Message):
         
         for arg in remaining_args:
             logger.info(f"Processing arg: '{arg}'")
-            if arg.startswith(('http://', 'https://')):
+            if is_safe_link(arg):
                 if any(ext in arg.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
                     url_image = arg
                     logger.info(f"Detected image URL: {arg}")
@@ -1073,17 +1056,17 @@ async def create_contest_command(message: types.Message):
         contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url)
         
         duration_formatted = format_duration(duration)
-        response_text = f"✅ Contest '{name}' created with ID {contest_id}.\n⏰ Duration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
+        response_text = f"Contest '{name}' created with ID {contest_id}.\nDuration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
         if final_image_url:
-            response_text += f"\n📸 Image: {final_image_url}"
+            response_text += f"\nImage: {final_image_url}"
         
         await message.answer(response_text)
         logger.info(f"Created contest {contest_id}: {name} with image: {final_image_url}")
     except ValueError as e:
-        await message.answer(f"❌ Invalid parameters: {e}")
+        await message.answer(f"Invalid parameters: {e}")
         logger.error(f"Invalid contest creation parameters: {e}")
     except Exception as e:
-        await message.answer(f"❌ Error creating contest: {e}")
+        await message.answer(f"Error creating contest: {e}")
         logger.error(f"Error creating contest: {e}")
 
 @dp.message(Command("stats"))
@@ -1091,7 +1074,7 @@ async def stats_command(message: types.Message):
     logger.info(f"Stats command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     try:
@@ -1105,13 +1088,13 @@ async def stats_command(message: types.Message):
         return
     
     if not current_contest_id:
-        await message.answer("📊 No active giveaway.")
+        await message.answer("No active giveaway.")
         return
     
     try:
         contest = await get_contest_by_id(current_contest_id)
         if not contest:
-            await message.answer("❌ Contest not found.")
+            await message.answer("Contest not found.")
             return
         
         text = f"📊 Giveaway Stats for '{contest['name']}'\n"
@@ -1125,7 +1108,7 @@ async def stats_command(message: types.Message):
         await message.answer(text)
         logger.info(f"Stats requested for contest {current_contest_id}")
     except Exception as e:
-        await message.answer(f"❌ Error getting stats: {e}")
+        await message.answer(f"Error getting stats: {e}")
         logger.error(f"Error getting stats: {e}")
 
 @dp.message(Command("set_prize_data"))
@@ -1133,7 +1116,7 @@ async def set_prize_data_command(message: types.Message):
     logger.info(f"Set prize data command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     try:
@@ -1157,7 +1140,7 @@ async def set_prize_data_command(message: types.Message):
         prize_name = args[2]
         prize_value = args[3] if len(args) > 3 else ""
         
-        prize_type = 'link' if prize_value.startswith(('http://', 'https://', 'www.', 't.me/')) else 'text'
+        prize_type = 'link' if is_safe_link(prize_value) else 'text'
         
         from db import get_db_connection
         conn = await get_db_connection(DB_CONFIG)
@@ -1170,7 +1153,7 @@ async def set_prize_data_command(message: types.Message):
                 """, (prize_name, prize_type, prize_value, contest_id, position))
                 
                 if cursor.rowcount == 0:
-                    await message.answer(f"❌ No prize found for contest {contest_id}, position {position}")
+                    await message.answer(f"No prize found for contest {contest_id}, position {position}")
                     return
                 
                 await conn.commit()
@@ -1181,10 +1164,10 @@ async def set_prize_data_command(message: types.Message):
             conn.close()
         
     except ValueError as e:
-        await message.answer(f"❌ Invalid parameters: {e}")
+        await message.answer(f"Invalid parameters: {e}")
         logger.error(f"Invalid prize data parameters: {e}")
     except Exception as e:
-        await message.answer(f"❌ Error setting prize data: {e}")
+        await message.answer(f"Error setting prize data: {e}")
         logger.error(f"Error setting prize data: {e}")
 
 @dp.message(Command("prize_info"))
@@ -1192,7 +1175,7 @@ async def prize_info_command(message: types.Message):
     logger.info(f"Prize info command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     try:
@@ -1225,22 +1208,22 @@ async def prize_info_command(message: types.Message):
                 message_text += f"🔗 Type: {prize['prize_type']}\n"
                 message_text += f"💎 Value: {prize['prize_value']}\n\n"
         else:
-            message_text = f"❌ No prize data found for contest {contest_id}"
+            message_text = f"No prize data found for contest {contest_id}"
         
         await message.answer(message_text)
         logger.info(f"Prize info requested for contest {contest_id}")
         
     except ValueError as e:
-        await message.answer(f"❌ Invalid contest ID: {e}")
+        await message.answer(f"Invalid contest ID: {e}")
         logger.error(f"Invalid contest ID: {e}")
     except Exception as e:
-        await message.answer(f"❌ Error getting prize info: {e}")
+        await message.answer(f"Error getting prize info: {e}")
         logger.error(f"Error getting prize info: {e}")
 
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     help_text = """🤖 **Giveaway Bot Commands**
@@ -1282,7 +1265,7 @@ async def cancel_giveaway_command(message: types.Message):
     logger.info(f"Cancel giveaway command by user {message.from_user.id} in chat {message.chat.id}")
     
     if message.chat.id not in ALLOWED_CHATS:
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
         return
     
     try:
@@ -1296,16 +1279,16 @@ async def cancel_giveaway_command(message: types.Message):
         return
     
     if not await is_giveaway_running():
-        await message.answer("📊 No active giveaway to cancel.")
+        await message.answer("No active giveaway to cancel.")
         return
     
     try:
         contest = await get_contest_by_id(current_contest_id)
         if not contest:
-            await message.answer("❌ Contest not found.")
+            await message.answer("Contest not found.")
             return
         
-        cancel_text = f"❌ Giveaway '{contest['name']}' has been cancelled.\nThank you for participating, better luck next time! 🌷"
+        cancel_text = f"Giveaway '{contest['name']}' has been cancelled.\nThank you for participating, better luck next time! 🌷"
         if giveaway_has_image:
             await bot.edit_message_caption(
                 chat_id=giveaway_chat_id,
@@ -1328,10 +1311,10 @@ async def cancel_giveaway_command(message: types.Message):
         giveaway_has_image = False
         await save_state_to_db()
         
-        await message.answer(f"✅ Giveaway '{contest['name']}' has been cancelled.")
+        await message.answer(f"Giveaway '{contest['name']}' has been cancelled.")
         logger.info(f"Giveaway cancelled by user {message.from_user.id}")
     except Exception as e:
-        await message.answer(f"❌ Error cancelling giveaway: {e}")
+        await message.answer(f"Error cancelling giveaway: {e}")
         logger.error(f"Error cancelling giveaway: {e}")
 
 @dp.message()
@@ -1342,15 +1325,17 @@ async def handle_any_message(message: types.Message):
     
     if (not message.text or not (message.text.startswith('/claim') or message.text.startswith('/start_giveaway') or message.text.startswith('/contest') or message.text.startswith('/create_contest') or message.text.startswith('/stats') or message.text.startswith('/set_prize_data') or message.text.startswith('/prize_info') or message.text.startswith('/help') or message.text.startswith('/cancel_giveaway'))) and message.chat.id not in ALLOWED_CHATS:
         logger.warning(f"Sending backward compatibility message for chat {message.chat.id}")
-        await message.answer("Sorry, I'm not a real bot, they just made me for backward compatibility. I can't really answer any questions.")
+        await message.answer("This chat is not authorized for giveaways.")
 
 if __name__ == "__main__":
     async def main():   
         validate_config()
         from db import init_database
         await init_database(DB_CONFIG)
-        from db import load_state_from_db
-        participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id = await load_state_from_db(DB_CONFIG)
+        
+        await load_state_from_db()
+        
+        logger.info("Bot starting with restored state")
         await dp.start_polling(bot)
     
     asyncio.run(main())
