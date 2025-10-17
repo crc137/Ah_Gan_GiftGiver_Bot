@@ -32,6 +32,8 @@ async def init_database(config):
                     winners_count INT NOT NULL,
                     prizes TEXT NOT NULL,
                     image_url VARCHAR(500),
+                    group_title VARCHAR(255),
+                    group_url VARCHAR(500),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -96,7 +98,7 @@ async def get_contest_by_id(contest_id: int, config):
     try:
         async with conn.cursor() as cursor:
             await cursor.execute(
-                "SELECT contest_name, duration, winners_count, prizes, image_url FROM contests WHERE id = %s",
+                "SELECT contest_name, duration, winners_count, prizes, image_url, group_title, group_url FROM contests WHERE id = %s",
                 (contest_id,)
             )
             result = await cursor.fetchone()
@@ -106,9 +108,11 @@ async def get_contest_by_id(contest_id: int, config):
                     'duration': result[1],
                     'winners_count': result[2],
                     'prizes': result[3].split(',') if result[3] else [],
-                    'image_url': result[4]
+                    'image_url': result[4],
+                    'group_title': result[5],
+                    'group_url': result[6]
                 }
-                logger.info(f"Retrieved contest {contest_id}: {contest['name']}")
+                logger.info(f"Retrieved contest {contest_id}: {contest['name']} with group info: {contest['group_title']}")
                 return contest
             return None
     except Exception as e:
@@ -117,18 +121,18 @@ async def get_contest_by_id(contest_id: int, config):
     finally:
         conn.close()
 
-async def add_contest(contest_name: str, duration: int, winners_count: int, prizes: list, config, image_url: str = None):
+async def add_contest(contest_name: str, duration: int, winners_count: int, prizes: list, config, image_url: str = None, group_title: str = None, group_url: str = None):
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
             prizes_str = ','.join(prizes) if prizes else ''
             await cursor.execute(
-                "INSERT INTO contests (contest_name, duration, winners_count, prizes, image_url) VALUES (%s, %s, %s, %s, %s)",
-                (contest_name, duration, winners_count, prizes_str, image_url)
+                "INSERT INTO contests (contest_name, duration, winners_count, prizes, image_url, group_title, group_url) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (contest_name, duration, winners_count, prizes_str, image_url, group_title, group_url)
             )
             await conn.commit()
             contest_id = cursor.lastrowid
-            logger.info(f"Created contest {contest_id}: {contest_name}")
+            logger.info(f"Created contest {contest_id}: {contest_name} with group info: {group_title}")
             return contest_id
     except Exception as e:
         logger.error(f"Error creating contest: {e}")

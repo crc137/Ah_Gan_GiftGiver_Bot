@@ -794,35 +794,60 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
         await save_state_to_db()
 
 async def notify_winners(winners: list, contest_name: str):
+    logger.info(f"Using giveaway_chat_id={giveaway_chat_id} (type={type(giveaway_chat_id)})")
+    
     group_title = f"ID {giveaway_chat_id}" if giveaway_chat_id else "the giveaway group"
     group_url = ""
+    
     try:
-        chat = await bot.get_chat(giveaway_chat_id)
-        if hasattr(chat, "title") and chat.title:
-            group_title = chat.title
-        if hasattr(chat, "username") and chat.username:
-            group_url = f"https://t.me/{chat.username}"
-        else:
-            try:
-                chat_info = await bot.get_chat(giveaway_chat_id)
-                if hasattr(chat_info, 'invite_link') and chat_info.invite_link:
-                    group_url = chat_info.invite_link
-                else:
-                    group_url = await bot.export_chat_invite_link(giveaway_chat_id)
-            except Exception as e2:
-                logger.warning(f"Could not get group invite link: {e2}")
-                group_url = ""
+        from db import get_contest_by_id
+        contest_info = await get_contest_by_id(current_contest_id, DB_CONFIG)
+        if contest_info and contest_info.get('group_title'):
+            group_title = contest_info['group_title']
+            group_url = contest_info.get('group_url', '')
+            logger.info(f"Using cached group info: title={group_title}, url={group_url}")
     except Exception as e:
-        logger.warning(f"Could not retrieve group info for notifications: {e}")
-        group_title = f"ID {giveaway_chat_id}" if giveaway_chat_id else "the giveaway group"
-        group_url = ""
+        logger.warning(f"Could not get cached group info: {e}")
+    
+    if not group_url or group_title == f"ID {giveaway_chat_id}":
+        try:
+            chat = await bot.get_chat(giveaway_chat_id)
+            logger.info(f"get_chat({giveaway_chat_id}) returned: title={getattr(chat, 'title', None)}, username={getattr(chat, 'username', None)}, invite_link={getattr(chat, 'invite_link', None)}")
+            
+            if hasattr(chat, "title") and chat.title:
+                group_title = chat.title
+            if hasattr(chat, "username") and chat.username:
+                group_url = f"https://t.me/{chat.username}"
+            else:
+                if hasattr(chat, 'invite_link') and chat.invite_link:
+                    group_url = chat.invite_link
+                    logger.info(f"Found invite_link: {group_url}")
+                else:
+                    try:
+                        link = await bot.export_chat_invite_link(giveaway_chat_id)
+                        group_url = link
+                        logger.info(f"Exported invite link: {link}")
+                    except Exception as e2:
+                        logger.warning(f"Could not export invite link: {e2}")
+                        group_url = ""
+        except Exception as e:
+            logger.warning(f"Could not retrieve group info for notifications: {e}")
+            group_title = f"ID {giveaway_chat_id}" if giveaway_chat_id else "the giveaway group"
+            group_url = ""
+
+    logger.info(f"Group title: {group_title}")
+    logger.info(f"Group URL: {group_url}")
 
     for winner in winners:
         try:
-            invite_part = f' - <a href="{group_url}">Join Group</a>' if group_url else ''
+            if group_url:
+                group_link = f'<a href="{group_url}">{group_title}</a>'
+            else:
+                group_link = f"<b>{group_title}</b>"
+            
             notification_text = (
                 f"🎉 Congratulations! You won a prize in the '{contest_name}' giveaway!\n\n"
-                f"🏆 You won this contest in the group: <b>{group_title}</b>{invite_part}\n\n"
+                f"🏆 You won this contest in the group: {group_link}\n\n"
                 f"To claim your prize, use the /claim command in private messages with the bot.\n\n"
                 f"Good luck in future giveaways! 🌟"
             )
@@ -836,7 +861,7 @@ async def notify_winners(winners: list, contest_name: str):
             giveaway_logger.info(f"✅ Winner notification sent to user {winner.id}")
 
         except Exception as e:
-            logger.warning(f"⚠️ Failed to send notification to winner {winner.id}: {e}")    
+            logger.warning(f"⚠️ Failed to send notification to winner {winner.id}: {e}")
 
 @dp.callback_query(lambda c: c.data == "claim")
 async def claim_prize(callback: types.CallbackQuery):
@@ -1204,8 +1229,30 @@ async def _create_contest_response(message: types.Message, name: str, duration: 
                                  image_url: str | None, url_image: str | None) -> None:
     final_image_url = image_url if image_url else url_image
     
+    group_title = None
+    group_url = None
+    try:
+        chat = await bot.get_chat(message.chat.id)
+        if hasattr(chat, "title") and chat.title:
+            group_title = chat.title
+            
+        if hasattr(chat, "username") and chat.username:
+            group_url = f"https://t.me/{chat.username}"
+        elif hasattr(chat, 'invite_link') and chat.invite_link:
+            group_url = chat.invite_link
+        else:
+            try:
+                group_url = await bot.export_chat_invite_link(message.chat.id)
+            except Exception as e:
+                logger.warning(f"Could not export invite link for group {message.chat.id}: {e}")
+                group_url = None
+        
+        logger.info(f"Group info for contest: title={group_title}, url={group_url}")
+    except Exception as e:
+        logger.warning(f"Could not retrieve group info for contest: {e}")
+    
     from db import add_contest
-    contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url)
+    contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url, group_title, group_url)
     
     duration_formatted = format_duration(duration)
     response_text = f"Contest '{name}' created with ID {contest_id}.\nDuration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
@@ -1213,7 +1260,7 @@ async def _create_contest_response(message: types.Message, name: str, duration: 
         response_text += f"\nImage: {final_image_url}"
     
     await message.answer(response_text)
-    logger.info(f"Created contest {contest_id}: {name} with image: {final_image_url}")
+    logger.info(f"Created contest {contest_id}: {name} with image: {final_image_url} and group: {group_title}")
 
 @dp.message(Command("create_contest"))
 async def create_contest_command(message: types.Message):
