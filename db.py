@@ -409,3 +409,87 @@ async def is_prize_claimed(contest_id: int, position: int, config):
         return False
     finally:
         conn.close()
+
+async def get_active_contests(config):
+    conn = await get_db_connection(config)
+    try:
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                SELECT DISTINCT c.id, c.contest_name, c.duration, c.winners_count, c.prizes, c.image_url
+                FROM contests c
+                JOIN giveaway_state gs ON c.id = gs.current_contest_id
+                WHERE gs.current_contest_id IS NOT NULL
+                AND JSON_LENGTH(gs.participants) > 0
+                AND (gs.winners IS NULL OR JSON_LENGTH(gs.winners) = 0)
+            """)
+            
+            results = await cursor.fetchall()
+            active_contests = []
+            for row in results:
+                active_contests.append({
+                    'id': row[0],
+                    'name': row[1],
+                    'duration': row[2],
+                    'winners_count': row[3],
+                    'prizes': row[4].split(',') if row[4] else [],
+                    'image_url': row[5]
+                })
+            return active_contests
+    except Exception as e:
+        logger.error(f"Error getting active contests: {e}")
+        return []
+    finally:
+        conn.close()
+
+async def get_user_rewards(user_id: int, config):
+    conn = await get_db_connection(config)
+    try:
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                SELECT 
+                    c.contest_name,
+                    cp.prize_name,
+                    cp.position,
+                    pc.claimed_at
+                FROM prize_claims pc
+                JOIN contest_prizes cp ON pc.contest_id = cp.contest_id AND pc.position = cp.position
+                JOIN contests c ON pc.contest_id = c.id
+                WHERE pc.winner_user_id = %s
+                ORDER BY pc.contest_id DESC, cp.position ASC
+            """, (user_id,))
+            
+            results = await cursor.fetchall()
+            rewards = []
+            for row in results:
+                rewards.append({
+                    'contest_name': row[0],
+                    'prize_name': row[1],
+                    'position': row[2],
+                    'claimed_at': row[3]
+                })
+            return rewards
+    except Exception as e:
+        logger.error(f"Error getting user rewards: {e}")
+        return []
+    finally:
+        conn.close()
+
+async def cleanup_old_contests(config):
+    conn = await get_db_connection(config)
+    try:
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                DELETE FROM contests 
+                WHERE created_at < NOW() - INTERVAL 90 DAY
+            """)
+            
+            deleted_count = cursor.rowcount
+            await conn.commit()
+            
+            logger.info(f"Cleaned up {deleted_count} old contests")
+            return deleted_count
+    except Exception as e:
+        logger.error(f"Error cleaning up old contests: {e}")
+        return 0
+    finally:
+        conn.close()

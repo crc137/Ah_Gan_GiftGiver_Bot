@@ -45,10 +45,17 @@ load_dotenv()
 
 try:
     os.makedirs("logs", exist_ok=True)
-    handlers = [
-        logging.FileHandler("logs/giveaway_bot.log"),
-        logging.StreamHandler()
-    ]
+    
+    main_handler = logging.FileHandler("logs/giveaway_bot.log")
+    main_handler.setLevel(logging.INFO)
+    
+    error_handler = logging.FileHandler("logs/errors.log")
+    error_handler.setLevel(logging.ERROR)
+    
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    handlers = [main_handler, error_handler, console_handler]
 except OSError:
     handlers = [logging.StreamHandler()]
 
@@ -58,6 +65,10 @@ logging.basicConfig(
     handlers=handlers
 )
 logger = logging.getLogger(__name__)
+
+giveaway_logger = logging.getLogger('giveaway')
+claim_logger = logging.getLogger('claim')
+error_logger = logging.getLogger('error')
 
 TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 group_id_str = os.getenv("GROUP_ID", "")
@@ -75,6 +86,9 @@ DB_CONFIG = {
 allowed_chats_str = os.getenv("ALLOWED_CHATS", "")
 ALLOWED_CHATS = [int(chat_id.strip()) for chat_id in allowed_chats_str.split(",") if chat_id.strip()]
 
+ALLOWED_DOMAINS = ["t.me", "telegram.me", "coonlink.com", "github.com", "steamcommunity.com"]
+participants_lock = asyncio.Lock()  
+
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
@@ -86,6 +100,8 @@ giveaway_message_id = None
 giveaway_chat_id = None
 giveaway_has_image = False
 giveaway_task = None  
+state_monitor_task = None  
+cleanup_task = None  
 
 def serialize_user(user: types.User) -> dict:
     return {
@@ -269,6 +285,66 @@ def is_safe_link(link: str) -> bool:
     if not link:
         return False
     return link.startswith(('https://', 't.me/', 'tg://'))
+
+def validate_prize_link(link: str) -> bool:
+    if not is_safe_link(link):
+        return False
+    
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(link)
+        domain = parsed.netloc.lower()
+        
+        if domain.startswith('www.'):
+            domain = domain[4:]
+            
+        return any(allowed in domain for allowed in ALLOWED_DOMAINS)
+    except Exception:
+        return False
+
+def is_duplicate_participant(user_id: int) -> bool:
+    return user_id in participants
+
+async def safe_edit_message(func, *args, **kwargs):
+    max_retries = 3
+    retry_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            error_msg = str(e).lower()
+
+            if "retry after" in error_msg:
+                import re
+                retry_match = re.search(r'retry after (\d+)', error_msg)
+                if retry_match:
+                    retry_delay = int(retry_match.group(1))
+                else:
+                    retry_delay = 2 ** attempt  
+                
+                logger.warning(f"Telegram rate limit hit, retrying in {retry_delay}s (attempt {attempt + 1}/{max_retries})")
+                await asyncio.sleep(retry_delay)
+                continue
+                
+            elif "bad request" in error_msg or "message not modified" in error_msg:
+                logger.warning(f"Telegram bad request, skipping: {e}")
+                return None
+                
+            elif "forbidden" in error_msg:
+                logger.error(f"Telegram forbidden error: {e}")
+                return None
+                
+            else:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Telegram API error, retrying in {retry_delay}s: {e}")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  
+                else:
+                    logger.error(f"Telegram API error after {max_retries} attempts: {e}")
+                    return None
+    
+    return None
 
 def is_url(text: str) -> bool:
     return is_safe_link(text)
@@ -515,6 +591,31 @@ async def load_state_from_db():
     
     logger.info(f"Restored state: contest_id={current_contest_id}, participants={len(participants)}, winners={len(winners)}")
 
+async def state_monitor():
+    while True:
+        try:
+            await asyncio.sleep(300)  
+            await save_state_to_db()
+            giveaway_logger.info("✅ State synced to database")
+        except Exception as e:
+            logger.error(f"⚠️ DB reconnect failed: {e}")
+            try:
+                from db import get_db_connection
+                await get_db_connection(DB_CONFIG)
+                logger.info("✅ DB reconnected successfully")
+            except Exception as reconnect_error:
+                logger.error(f"❌ DB reconnection failed: {reconnect_error}")
+
+async def auto_cleanup():
+    while True:
+        try:
+            await asyncio.sleep(86400)  
+            from db import cleanup_old_contests
+            deleted_count = await cleanup_old_contests(DB_CONFIG)
+            giveaway_logger.info(f"🧹 Daily cleanup completed: {deleted_count} old contests removed")
+        except Exception as e:
+            error_logger.error(f"❌ Auto cleanup failed: {e}")
+
 @dp.callback_query(lambda c: c.data == "join")
 async def join_callback(callback: types.CallbackQuery):
     user = callback.from_user
@@ -527,17 +628,59 @@ async def join_callback(callback: types.CallbackQuery):
         await callback.answer("😿 Sorry, bots cannot participate in the giveaway…", show_alert=True)
         return
 
-    if user.id not in participants:
+    async with participants_lock:
+        if is_duplicate_participant(user.id):
+            await callback.answer("😉 You are already participating!")
+            return
+        
         participants[user.id] = user
         await callback.answer("🎉 You have joined the giveaway! Wait for the results 🧸")
-    else:
-        await callback.answer("😉 You are already participating!")
-    await save_state_to_db()
+        await save_state_to_db()
+
+async def countdown_timer(duration: int, message_id: int, chat_id: int, has_image: bool):
+    remaining = duration
+    while remaining > 0:
+        await asyncio.sleep(60)  
+        remaining -= 60
+        
+        if remaining <= 0:
+            break
+            
+        hours = remaining // 3600
+        minutes = (remaining % 3600) // 60
+        seconds = remaining % 60
+        
+        if hours > 0:
+            time_str = f"{hours}h {minutes}m"
+        elif minutes > 0:
+            time_str = f"{minutes}m {seconds}s"
+        else:
+            time_str = f"{seconds}s"
+        
+        countdown_text = f"⏳ Осталось {time_str}"
+        
+        if has_image:
+            await safe_edit_message(
+                bot.edit_message_caption,
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=countdown_text
+            )
+        else:
+            await safe_edit_message(
+                bot.edit_message_text,
+                chat_id=chat_id,
+                message_id=message_id,
+                text=countdown_text
+            )
 
 async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     global current_contest_id, giveaway_message_id, giveaway_chat_id, giveaway_has_image
     
     try:
+        if giveaway_message_id and giveaway_chat_id:
+            asyncio.create_task(countdown_timer(duration, giveaway_message_id, giveaway_chat_id, giveaway_has_image))
+        
         await asyncio.sleep(duration)
         if not participants:
             if giveaway_has_image:
@@ -672,6 +815,10 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
         giveaway_has_image = False
         giveaway_task = None
 
+        contest_info = await get_contest_by_id(current_contest_id)
+        contest_name = contest_info['name'] if contest_info else "Unknown Contest"
+        await notify_winners(selected_winners, contest_name)
+        
         await save_state_to_db()
         
     except Exception as e:
@@ -682,6 +829,24 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
         giveaway_has_image = False
         giveaway_task = None
         await save_state_to_db()
+
+async def notify_winners(winners: list, contest_name: str):
+    for winner in winners:
+        try:
+            notification_text = (
+                f"🎉 Поздравляем! Вы выиграли приз в розыгрыше '{contest_name}'!\n\n"
+                f"🏆 Для получения приза используйте команду /claim в личных сообщениях с ботом.\n\n"
+                f"Удачи в следующих розыгрышах! 🌟"
+            )
+            
+            await bot.send_message(
+                chat_id=winner.id,
+                text=notification_text
+            )
+            giveaway_logger.info(f"✅ Winner notification sent to user {winner.id}")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to send notification to winner {winner.id}: {e}")    
 
 @dp.callback_query(lambda c: c.data == "claim")
 async def claim_prize(callback: types.CallbackQuery):
@@ -1270,6 +1435,43 @@ async def prize_info_command(message: types.Message):
         await message.answer(f"Error getting prize info: {e}")
         logger.error(f"Error getting prize info: {e}")
 
+@dp.message(Command("my_rewards"))
+async def my_rewards_command(message: types.Message):
+    user_id = message.from_user.id
+    
+    if message.chat.type != "private":
+        await message.answer("💬 Эта команда работает только в личных сообщениях с ботом! 🎁")
+        return
+    
+    try:
+        from db import get_user_rewards
+        rewards = await get_user_rewards(user_id, DB_CONFIG)
+        
+        if not rewards:
+            await message.answer("😿 У вас пока нет призов. Участвуйте в розыгрышах! 🎯")
+            return
+        
+        message_text = "🏆 **Ваши призы:**\n\n"
+        
+        for reward in rewards:
+            status = "✅ Забран" if reward['claimed_at'] else "⏳ Ожидает"
+            message_text += f"🎁 **{reward['prize_name']}**\n"
+            message_text += f"📅 Конкурс: {reward['contest_name']}\n"
+            message_text += f"🏅 Место: {reward['position']}\n"
+            message_text += f"📊 Статус: {status}\n"
+            if reward['claimed_at']:
+                message_text += f"⏰ Забран: {reward['claimed_at']}\n"
+            message_text += "\n"
+        
+        message_text += "💡 Используйте /claim для получения неполученных призов!"
+        
+        await message.answer(message_text, parse_mode="Markdown")
+        claim_logger.info(f"User {user_id} requested their rewards")
+        
+    except Exception as e:
+        await message.answer("❌ Ошибка при получении призов. Попробуйте позже.")
+        logger.error(f"Error getting user rewards: {e}")
+
 @dp.message(Command("help"))
 async def help_command(message: types.Message):
     if message.chat.id not in ALLOWED_CHATS:
@@ -1406,7 +1608,15 @@ if __name__ == "__main__":
         
         await load_state_from_db()
         
-        if current_contest_id:
+        from db import get_active_contests
+        active_contests = await get_active_contests(DB_CONFIG)
+        
+        if active_contests:
+            logger.info(f"Found {len(active_contests)} active contests to restore")
+            for contest in active_contests:
+                logger.info(f"Restoring contest ID {contest['id']}: {contest['name']}")
+                asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+        elif current_contest_id:
             logger.info(f"Restoring active contest ID {current_contest_id}")
             contest = await get_contest_by_id(current_contest_id)
             if contest:
@@ -1418,7 +1628,13 @@ if __name__ == "__main__":
                 current_contest_id = None
                 await save_state_to_db()
         else:
-            logger.info("No active contest to restore")
+            logger.info("No active contests to restore")
+        
+        global state_monitor_task, cleanup_task
+        state_monitor_task = asyncio.create_task(state_monitor())
+        cleanup_task = asyncio.create_task(auto_cleanup())
+        logger.info("🔄 State monitoring started")
+        logger.info("🧹 Auto cleanup started")
         
         logger.info("Bot starting with restored state")
         await dp.start_polling(bot)
