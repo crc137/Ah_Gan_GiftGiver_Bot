@@ -37,7 +37,7 @@ USAGE_CREATE_CONTEST = (
     "• 30M, 30Minutes - 30 minutes (max 1440)\n"
     "• 7 - 7 days (max 365)\n"
     "• 50 - 50 days (max 365)\n"
-    "• 8:46 - specific time (Europe/Tallinn, must be in future)\n\n"
+    "• 8:46 - specific time (Europe/Tallinn, auto-moves to next day if passed)\n\n"
     "You can attach an image or provide image_url!"
 )
 
@@ -144,9 +144,8 @@ def _parse_time_format(duration_str: str) -> int:
     target_time = now.replace(hour=hours, minute=minutes, second=0, microsecond=0)
     
     if target_time <= now:
-        current_time_str = now.strftime("%H:%M")
-        requested_time_str = f"{hours:02d}:{minutes:02d}"
-        raise ValueError(f"Time {requested_time_str} has already passed. Current time is {current_time_str}. Please specify a future time.")
+        target_time = target_time + timedelta(days=1)
+        logger.info(f"Time {hours:02d}:{minutes:02d} has already passed today, scheduling for tomorrow at {target_time.strftime('%H:%M')}")
     
     return int((target_time - now).total_seconds())
 
@@ -1816,7 +1815,7 @@ async def help_command(message: types.Message):
 • `/prize_info <contest_id>` - View prize information
 
 **⏰ Duration Formats:**
-• `8:46` - Specific time (Europe/Tallinn, must be in future)
+• `8:46` - Specific time (Europe/Tallinn, auto-moves to next day if passed)
 • `7д` - 7 days (max 365)
 • `2ч` - 2 hours (max 8760)
 • `30мин` - 30 minutes (max 1440)
