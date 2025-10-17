@@ -774,15 +774,15 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
             except Exception as e:
                 logger.error(f"Failed to update giveaway message: {e}")
 
+        contest_info = await get_contest_by_id(current_contest_id)
+        contest_name = contest_info['name'] if contest_info else "Unknown Contest"
+        await notify_winners(selected_winners, contest_name)
+        
         current_contest_id = None
         giveaway_message_id = None
         giveaway_chat_id = None
         giveaway_has_image = False
         giveaway_task = None
-
-        contest_info = await get_contest_by_id(current_contest_id)
-        contest_name = contest_info['name'] if contest_info else "Unknown Contest"
-        await notify_winners(selected_winners, contest_name)
         
         await save_state_to_db()
         
@@ -1252,8 +1252,7 @@ async def _create_contest_response(message: types.Message, name: str, duration: 
     except Exception as e:
         logger.warning(f"Could not retrieve group info for contest: {e}")
     
-    from db import add_contest
-    contest_id = await add_contest(name, duration, winners_count, prizes, DB_CONFIG, final_image_url, group_title, group_url)
+    contest_id = await add_contest(name, duration, winners_count, prizes, final_image_url, group_title, group_url)
     
     duration_formatted = format_duration(duration)
     response_text = f"Contest '{name}' created with ID {contest_id}.\nDuration: {duration_formatted}\nUse /start_giveaway {contest_id} to start it."
