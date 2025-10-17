@@ -102,6 +102,8 @@ giveaway_has_image = False
 giveaway_task = None  
 state_monitor_task = None  
 cleanup_task = None  
+countdown_task = None  
+restore_tasks = []  
 
 def serialize_user(user: types.User) -> dict:
     return {
@@ -679,7 +681,8 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     
     try:
         if giveaway_message_id and giveaway_chat_id:
-            asyncio.create_task(countdown_timer(duration, giveaway_message_id, giveaway_chat_id, giveaway_has_image))
+            global countdown_task
+            countdown_task = asyncio.create_task(countdown_timer(duration, giveaway_message_id, giveaway_chat_id, giveaway_has_image))
         
         await asyncio.sleep(duration)
         if not participants:
@@ -1613,9 +1616,11 @@ if __name__ == "__main__":
         
         if active_contests:
             logger.info(f"Found {len(active_contests)} active contests to restore")
+            global restore_tasks
             for contest in active_contests:
                 logger.info(f"Restoring contest ID {contest['id']}: {contest['name']}")
-                asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+                task = asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+                restore_tasks.append(task)
         elif current_contest_id:
             logger.info(f"Restoring active contest ID {current_contest_id}")
             contest = await get_contest_by_id(current_contest_id)
