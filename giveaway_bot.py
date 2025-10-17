@@ -966,19 +966,83 @@ async def contest_command(message: types.Message):
     
     asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
 
+def _validate_image_url(url: str) -> bool:
+    if not url or not is_safe_link(url):
+        logger.warning(f"Invalid URL format: {url}")
+        return False
+    return True
+
+def _get_http_headers() -> dict:
+    return {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'image/*,*/*;q=0.8'
+    }
+
+def _validate_response_status(resp, url: str) -> bool:
+    if resp.status != 200:
+        logger.warning(f"HTTP error {resp.status} for URL: {url}")
+        return False
+    return True
+
+def _validate_content_type(content_type: str, url: str) -> bool:
+    if not content_type.startswith("image/"):
+        logger.warning(f"Invalid content type {content_type} for URL: {url}")
+        return False
+    return True
+
+def _validate_content_size(content_length: str, url: str) -> bool:
+    if content_length and int(content_length) > 20 * 1024 * 1024:
+        logger.warning(f"Image too large ({content_length} bytes) for URL: {url}")
+        return False
+    return True
+
+def _validate_downloaded_data(data: bytes, url: str) -> bool:
+    if not data:
+        logger.warning(f"Empty image data for URL: {url}")
+        return False
+    if len(data) > 20 * 1024 * 1024:
+        logger.warning(f"Downloaded image too large ({len(data)} bytes) for URL: {url}")
+        return False
+    return True
+
+def _detect_image_format(data: bytes, content_type: str, url: str) -> str | None:
+    if data.startswith(b'\xff\xd8\xff'):
+        return 'jpeg'
+    elif data.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'png'
+    elif data.startswith(b'GIF87a') or data.startswith(b'GIF89a'):
+        return 'gif'
+    elif data.startswith(b'RIFF') and b'WEBP' in data[:12]:
+        return 'webp'
+    elif data.startswith(b'\x00\x00\x00 ftypavif'):
+        logger.warning(f"AVIF format detected - not supported by Telegram Bot API: {url}")
+        return None
+    else:
+        logger.warning(f"Unknown image format detected in data for URL: {url}")
+        return 'unknown'
+
+def _validate_image_format(subtype: str, url: str) -> bool:
+    supported_formats = ['jpeg', 'jpg', 'png', 'gif', 'webp']
+    if subtype not in supported_formats:
+        logger.warning(f"Unsupported image format {subtype} for URL: {url}")
+        return False
+    return True
+
+def _create_filename(actual_format: str, subtype: str, data: bytes) -> str:
+    if actual_format == 'unknown' and len(data) > 100:
+        logger.warning(f"Unknown image format, but data size suggests it might be valid: {len(data)} bytes")
+        return f"image.{subtype}"
+    return f"image.{actual_format if actual_format != 'unknown' else subtype}"
+
 async def download_image(url: str) -> BufferedInputFile | None:
     logger.info(f"Starting image download from: {url}")
     
     try:
-        if not url or not is_safe_link(url):
-            logger.warning(f"Invalid URL format: {url}")
+        if not _validate_image_url(url):
             return None
             
         timeout = aiohttp.ClientTimeout(total=15)  
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'image/*,*/*;q=0.8'
-        }
+        headers = _get_http_headers()
         
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             logger.info(f"Making request to: {url}")
@@ -986,67 +1050,42 @@ async def download_image(url: str) -> BufferedInputFile | None:
                 logger.info(f"Response status: {resp.status}")
                 logger.info(f"Response headers: {dict(resp.headers)}")
                 
-                if resp.status != 200:
-                    logger.warning(f"HTTP error {resp.status} for URL: {url}")
+                if not _validate_response_status(resp, url):
                     return None
                     
                 content_type = resp.headers.get("Content-Type", "").lower()
                 logger.info(f"Content-Type: {content_type}")
                 
-                if not content_type.startswith("image/"):
-                    logger.warning(f"Invalid content type {content_type} for URL: {url}")
+                if not _validate_content_type(content_type, url):
                     return None
                     
                 content_length = resp.headers.get('Content-Length')
                 if content_length:
                     logger.info(f"Content-Length: {content_length} bytes")
-                    if int(content_length) > 20 * 1024 * 1024:
-                        logger.warning(f"Image too large ({content_length} bytes) for URL: {url}")
+                    if not _validate_content_size(content_length, url):
                         return None
                     
                 data = await resp.read()
                 logger.info(f"Downloaded {len(data)} bytes")
                 
-                if not data:
-                    logger.warning(f"Empty image data for URL: {url}")
-                    return None
-                    
-                if len(data) > 20 * 1024 * 1024:
-                    logger.warning(f"Downloaded image too large ({len(data)} bytes) for URL: {url}")
+                if not _validate_downloaded_data(data, url):
                     return None
                     
                 supported_formats = ['jpeg', 'jpg', 'png', 'gif', 'webp']
                 subtype = content_type.split("/", 1)[1].split(';')[0] if "/" in content_type else "jpg"
                 logger.info(f"Image subtype from Content-Type: {subtype}")
                 
-                if subtype not in supported_formats:
-                    logger.warning(f"Unsupported image format {subtype} for URL: {url}")
+                if not _validate_image_format(subtype, url):
                     return None
                 
-                if data.startswith(b'\xff\xd8\xff'):
-                    actual_format = 'jpeg'
-                elif data.startswith(b'\x89PNG\r\n\x1a\n'):
-                    actual_format = 'png'
-                elif data.startswith(b'GIF87a') or data.startswith(b'GIF89a'):
-                    actual_format = 'gif'
-                elif data.startswith(b'RIFF') and b'WEBP' in data[:12]:
-                    actual_format = 'webp'
-                elif data.startswith(b'\x00\x00\x00 ftypavif'):
-                    actual_format = 'avif'
-                    logger.warning(f"AVIF format detected - not supported by Telegram Bot API: {url}")
+                actual_format = _detect_image_format(data, content_type, url)
+                if actual_format is None:
                     return None
-                else:
-                    actual_format = 'unknown'
-                    logger.warning(f"Unknown image format detected in data for URL: {url}")
                 
                 logger.info(f"Actual image format detected: {actual_format}")
                 
-                filename = f"image.{actual_format if actual_format != 'unknown' else subtype}"
+                filename = _create_filename(actual_format, subtype, data)
                 logger.info(f"Successfully downloaded image from {url} ({len(data)} bytes, {actual_format})")
-                
-                if actual_format == 'unknown' and len(data) > 100:  
-                    logger.warning(f"Unknown image format, but data size suggests it might be valid: {len(data)} bytes")
-                    filename = f"image.{subtype}"
                 
                 return BufferedInputFile(data, filename)
                 
