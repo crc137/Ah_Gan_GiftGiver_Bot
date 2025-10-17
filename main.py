@@ -7,6 +7,9 @@ import signal
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
+from dotenv import load_dotenv
+
+load_dotenv()
 
 def run_telegram_bot():
     try:
@@ -24,7 +27,7 @@ def run_web_interface():
     try:
         import uvicorn
         from web_interface import app
-        uvicorn.run(app, host="0.0.0.0", port=3000)
+        uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 3000)))
     except Exception as e:
         print(f"Error running web interface: {e}")
         sys.exit(1)
@@ -46,7 +49,17 @@ def main():
     if missing_vars:
         print(f"Error: Missing required environment variables: {', '.join(missing_vars)}")
         print("Please set these variables or copy env.example to .env and configure it.")
+        print("Example: cp env.example .env")
         sys.exit(1)
+    
+    # Show configuration info
+    print(f"Database: {os.getenv('DB_HOST')}:{os.getenv('DB_PORT', '3306')}")
+    print(f"Web interface port: {os.getenv('PORT', '3000')}")
+    if os.getenv('ADMIN_ID'):
+        print(f"Admin ID: {os.getenv('ADMIN_ID')}")
+    if os.getenv('ALLOWED_CHATS'):
+        print(f"Allowed chats: {os.getenv('ALLOWED_CHATS')}")
+    print()
     
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
