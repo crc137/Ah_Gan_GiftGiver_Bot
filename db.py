@@ -193,7 +193,7 @@ async def save_state_to_db(participants, winners, claimed_winners, giveaway_mess
             
             if cursor.rowcount == 0:
                 await cursor.execute("""
-                    INSERT INTO giveaway_state 
+                    INSERT IGNORE INTO giveaway_state 
                     (id, participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id)
                     VALUES (1, %s, %s, %s, %s, %s, %s, %s)
                 """, (participants_json, winners_json, claimed_winners_json,
