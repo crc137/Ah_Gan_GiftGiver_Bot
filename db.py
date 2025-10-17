@@ -53,6 +53,17 @@ async def init_database(config):
             """)
             
             await cursor.execute("""
+                CREATE TABLE IF NOT EXISTS prizes (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(255) NOT NULL,
+                    description TEXT,
+                    prize_type ENUM('account', 'link', 'code', 'text') NOT NULL,
+                    prize_data TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            await cursor.execute("""
                 CREATE TABLE IF NOT EXISTS prize_claims (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     contest_id INT NOT NULL,
@@ -60,7 +71,9 @@ async def init_database(config):
                     winner_user_id BIGINT NOT NULL,
                     claimed_at TIMESTAMP NULL,
                     security_code VARCHAR(32) NOT NULL,
+                    prize_id INT,
                     FOREIGN KEY (contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+                    FOREIGN KEY (prize_id) REFERENCES prizes(id) ON DELETE SET NULL,
                     UNIQUE KEY unique_winner_prize (contest_id, position, winner_user_id)
                 )
             """)
@@ -293,7 +306,26 @@ async def get_contest_prizes(contest_id: int, config):
     finally:
         conn.close()
 
-async def assign_winner_to_prize_position(contest_id: int, position: int, user_id: int, config):
+async def create_prize(name: str, description: str, prize_type: str, prize_data: str, config):
+    conn = await get_db_connection(config)
+    try:
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                INSERT INTO prizes (name, description, prize_type, prize_data)
+                VALUES (%s, %s, %s, %s)
+            """, (name, description, prize_type, prize_data))
+            
+            await conn.commit()
+            prize_id = cursor.lastrowid
+            logger.info(f"Created prize {prize_id}: {name}")
+            return prize_id
+    except Exception as e:
+        logger.error(f"Error creating prize: {e}")
+        raise
+    finally:
+        conn.close()
+
+async def assign_winner_to_prize_position(contest_id: int, position: int, user_id: int, prize_id: int, config):
     import secrets
     
     conn = await get_db_connection(config)
@@ -302,14 +334,67 @@ async def assign_winner_to_prize_position(contest_id: int, position: int, user_i
             security_code = secrets.token_hex(16)
             
             await cursor.execute("""
-                INSERT INTO prize_claims (contest_id, position, winner_user_id, security_code)
-                VALUES (%s, %s, %s, %s)
-            """, (contest_id, position, user_id, security_code))
+                INSERT INTO prize_claims (contest_id, position, winner_user_id, security_code, prize_id)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (contest_id, position, user_id, security_code, prize_id))
             
             await conn.commit()
-            logger.info(f"Assigned user {user_id} to prize position {position} in contest {contest_id}")
+            logger.info(f"Assigned user {user_id} to prize position {position} in contest {contest_id} with prize {prize_id}")
     except Exception as e:
         logger.error(f"Error assigning winner to prize: {e}")
+        raise
+    finally:
+        conn.close()
+
+async def get_prize_by_security_code(security_code: str, config):
+    conn = await get_db_connection(config)
+    try:
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                SELECT p.name, p.description, p.prize_type, p.prize_data, 
+                       pc.contest_id, pc.position, pc.winner_user_id, pc.claimed_at,
+                       c.contest_name, c.group_title
+                FROM prize_claims pc
+                LEFT JOIN prizes p ON pc.prize_id = p.id
+                LEFT JOIN contests c ON pc.contest_id = c.id
+                WHERE pc.security_code = %s
+            """, (security_code,))
+            
+            result = await cursor.fetchone()
+            if result:
+                return {
+                    'prize_name': result[0],
+                    'prize_description': result[1],
+                    'prize_type': result[2],
+                    'prize_data': result[3],
+                    'contest_id': result[4],
+                    'position': result[5],
+                    'winner_user_id': result[6],
+                    'claimed_at': result[7],
+                    'contest_name': result[8],
+                    'group_title': result[9]
+                }
+            return None
+    except Exception as e:
+        logger.error(f"Error getting prize by security code: {e}")
+        raise
+    finally:
+        conn.close()
+
+async def mark_prize_as_claimed_by_code(security_code: str, config):
+    conn = await get_db_connection(config)
+    try:
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                UPDATE prize_claims 
+                SET claimed_at = CURRENT_TIMESTAMP 
+                WHERE security_code = %s AND claimed_at IS NULL
+            """, (security_code,))
+            
+            await conn.commit()
+            return cursor.rowcount > 0
+    except Exception as e:
+        logger.error(f"Error marking prize as claimed: {e}")
         raise
     finally:
         conn.close()

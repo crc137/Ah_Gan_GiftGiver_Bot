@@ -86,6 +86,9 @@ DB_CONFIG = {
 allowed_chats_str = os.getenv("ALLOWED_CHATS", "")
 ALLOWED_CHATS = [int(chat_id.strip()) for chat_id in allowed_chats_str.split(",") if chat_id.strip()]
 
+admin_id_str = os.getenv("ADMIN_ID", "")
+ADMIN_ID = int(admin_id_str) if admin_id_str.strip() else None
+
 ALLOWED_DOMAINS = ["t.me", "telegram.me", "coonlink.com", "github.com", "steamcommunity.com"]
 participants_lock = asyncio.Lock()  
 
@@ -798,27 +801,6 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
 async def notify_winners(winners: list, contest_name: str):
     logger.info(f"Using giveaway_chat_id={giveaway_chat_id} (type={type(giveaway_chat_id)})")
     
-    try:
-        from db import get_contest_prizes
-        prizes = await get_contest_prizes(current_contest_id, DB_CONFIG)
-        if prizes:
-            import aiomysql
-            conn = await aiomysql.connect(**DB_CONFIG)
-            async with conn.cursor() as cursor:
-                await cursor.execute("""
-                    SELECT COUNT(*) FROM prize_claims 
-                    WHERE contest_id = %s
-                """, (current_contest_id,))
-                total_claims = (await cursor.fetchone())[0]
-                
-                if total_claims > 0:
-                    logger.info(f"Prize claims already exist for contest {current_contest_id}, skipping notifications...")
-                    conn.close()
-                    return
-            conn.close()
-    except Exception as e:
-        logger.warning(f"Could not check notification status: {e}")
-    
     group_title = f"ID {giveaway_chat_id}" if giveaway_chat_id else "the giveaway group"
     group_url = ""
     
@@ -906,6 +888,8 @@ async def claim_prize(callback: types.CallbackQuery):
 async def claim_command(message: types.Message):
     user_id = message.from_user.id
     
+    logger.info(f"Claim command from user {user_id} in chat {message.chat.id}")
+    
     if message.chat.type != "private":
         await message.answer("💬 To claim your reward, please send the /claim command to the bot in a private chat! 🎁")
         return
@@ -915,13 +899,13 @@ async def claim_command(message: types.Message):
     winner_prize = await get_latest_unclaimed_prize_for_user(user_id, DB_CONFIG)
     
     if not winner_prize:
+        logger.info(f"No unclaimed prizes found for user {user_id}")
         await message.answer("😿 Sorry, you don't have any unclaimed prizes.")
         return
     
-    success = await mark_prize_as_claimed(winner_prize['contest_id'], user_id, DB_CONFIG)
-    if not success:
-        await message.answer("Error claiming prize. Please try again later.")
-        return
+    logger.info(f"Found unclaimed prize for user {user_id}: {winner_prize}")
+    
+    web_url = f"https://ahgan.coonlink.com/giftgiver/card/show/code/{winner_prize['security_code']}"
     
     message_text = "🧁 Yay~ You made it! (✿◠‿◠)\nHere's your little gift 🎁\nHope it brings you a smile and a bit of luck 💖\n\n"
     
@@ -938,22 +922,304 @@ async def claim_command(message: types.Message):
         position_emoji = "🏅"
     message_text += f"{position_emoji} You won {_ordinal_suffix(position)} place!\n"
     message_text += f"🎁 Prize: {winner_prize['prize_name']}\n"
-    message_text += f"🏆 Contest ID: {winner_prize['contest_id']}\n"
+    message_text += f"🏆 Contest ID: {winner_prize['contest_id']}\n\n"
+    message_text += "🔗 Click the button below to claim your prize:"
     
-    if winner_prize['prize_type'] == 'link':
-        builder.button(text="🎀 Claim Prize", url=winner_prize['prize_value'])
-        message_text += "✨ Click the button below to claim your prize!\n"
-    else:
-        message_text += f"✨ Prize Details: {winner_prize['prize_value']}\n"
+    builder.button(text="🎀 Claim Prize", url=web_url)
+    builder.adjust(1)
     
-    message_text += "\nYou're amazing — stay cute and lucky! (≧◡≦)♡"
-    
-    if builder.buttons:
-        await message.answer(message_text, reply_markup=builder.as_markup(), parse_mode="Markdown")
-    else:
-        await message.answer(message_text, parse_mode="Markdown")
+    await message.answer(
+        message_text,
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML"
+    )
     
     await save_state_to_db()
+
+@dp.message(Command("create_prize"))
+async def create_prize_command(message: types.Message):
+    logger.info(f"Create prize command by user {message.from_user.id} in chat {message.chat.id}")
+    
+    is_admin = False
+    
+    if message.chat.type == "private" and ADMIN_ID and message.from_user.id == ADMIN_ID:
+        is_admin = True
+    elif message.chat.id in ALLOWED_CHATS:
+        try:
+            chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if chat_member.status in ["creator", "administrator"]:
+                is_admin = True
+        except Exception as e:
+            logger.error(f"Error checking admin permissions: {e}")
+    
+    if not is_admin:
+        await message.answer("❌ You don't have permission to create prizes.")
+        return
+    
+    args = message.text.split()[1:] if len(message.text.split()) > 1 else []
+    
+    if len(args) < 4:
+        await message.answer(
+            "❌ Invalid format. Use:\n"
+            "/create_prize <name> <type> <description> <data>\n\n"
+            "Types: account, link, code, text\n"
+            "Example: /create_prize \"Steam Account\" account \"Premium Steam account\" \"login:user123\\npassword:pass456\""
+        )
+        return
+    
+    try:
+        name = args[0].strip('"')
+        prize_type = args[1]
+        description = args[2].strip('"')
+        prize_data = args[3].strip('"')
+        
+        if prize_type not in ['account', 'link', 'code', 'text']:
+            await message.answer("❌ Invalid prize type. Use: account, link, code, text")
+            return
+        
+        from db import create_prize
+        prize_id = await create_prize(name, description, prize_type, prize_data, DB_CONFIG)
+        
+        await message.answer(f"✅ Prize created with ID {prize_id}: {name}")
+        logger.info(f"Created prize {prize_id}: {name}")
+        
+    except Exception as e:
+        logger.error(f"Error creating prize: {e}")
+        await message.answer(f"Error creating prize: {e}")
+
+@dp.message(Command("list_prizes"))
+async def list_prizes_command(message: types.Message):
+    logger.info(f"List prizes command by user {message.from_user.id} in chat {message.chat.id}")
+    
+    is_admin = False
+    
+    if message.chat.type == "private" and ADMIN_ID and message.from_user.id == ADMIN_ID:
+        is_admin = True
+    elif message.chat.id in ALLOWED_CHATS:
+        try:
+            chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if chat_member.status in ["creator", "administrator"]:
+                is_admin = True
+        except Exception as e:
+            logger.error(f"Error checking admin permissions: {e}")
+    
+    if not is_admin:
+        await message.answer("❌ You don't have permission to view prizes.")
+        return
+    
+    try:
+        import aiomysql
+        conn = await aiomysql.connect(**DB_CONFIG)
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                SELECT id, name, description, prize_type, created_at 
+                FROM prizes 
+                ORDER BY created_at DESC 
+                LIMIT 10
+            """)
+            prizes = await cursor.fetchall()
+            
+        conn.close()
+        
+        if not prizes:
+            await message.answer("📋 No prizes found.")
+            return
+        
+        text = "🎁 **Recent Prizes:**\n\n"
+        for prize in prizes:
+            text += f"**ID {prize[0]}**: {prize[1]}\n"
+            text += f"Type: {prize[3]}\n"
+            text += f"Description: {prize[2]}\n"
+            text += f"Created: {prize[4]}\n\n"
+        
+        await message.answer(text, parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"Error listing prizes: {e}")
+        await message.answer(f"Error listing prizes: {e}")
+
+@dp.message(Command("my_groups"))
+async def my_groups_command(message: types.Message):
+    logger.info(f"My groups command by user {message.from_user.id} in chat {message.chat.id}")
+    
+    is_admin = False
+    
+    if message.chat.type == "private" and ADMIN_ID and message.from_user.id == ADMIN_ID:
+        is_admin = True
+    elif message.chat.id in ALLOWED_CHATS:
+        try:
+            chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if chat_member.status in ["creator", "administrator"]:
+                is_admin = True
+        except Exception as e:
+            logger.error(f"Error checking admin permissions: {e}")
+    
+    if not is_admin:
+        await message.answer("❌ You don't have permission to view group information.")
+        return
+    
+    try:
+        import aiomysql
+        conn = await aiomysql.connect(**DB_CONFIG)
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                SELECT DISTINCT group_title, group_url, COUNT(*) as contest_count
+                FROM contests 
+                WHERE group_title IS NOT NULL 
+                GROUP BY group_title, group_url
+                ORDER BY contest_count DESC
+            """)
+            groups = await cursor.fetchall()
+            
+        conn.close()
+        
+        if not groups:
+            await message.answer("📋 No groups found in database.")
+            return
+        
+        text = "🏢 **Your Groups:**\n\n"
+        for group in groups:
+            group_title = group[0] or "Unknown Group"
+            group_url = group[1] or "No URL"
+            contest_count = group[2]
+            
+            text += f"**{group_title}**\n"
+            text += f"🔗 URL: `{group_url}`\n"
+            text += f"📊 Contests: {contest_count}\n\n"
+        
+        text += "💡 **Copy commands:**\n"
+        text += "• To copy group URL: Click on the URL above\n"
+        text += "• To create contest: Use `/create_contest` in the group\n"
+        
+        await message.answer(text, parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"Error listing groups: {e}")
+        await message.answer(f"Error listing groups: {e}")
+
+@dp.message(Command("group_info"))
+async def group_info_command(message: types.Message):
+    logger.info(f"Group info command by user {message.from_user.id} in chat {message.chat.id}")
+    
+    if message.chat.type == "private":
+        await message.answer("❌ This command only works in groups.")
+        return
+    
+    is_admin = False
+    if message.chat.id in ALLOWED_CHATS:
+        try:
+            chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if chat_member.status in ["creator", "administrator"]:
+                is_admin = True
+        except Exception as e:
+            logger.error(f"Error checking admin permissions: {e}")
+    
+    if not is_admin:
+        await message.answer("❌ You don't have permission to view group information.")
+        return
+    
+    try:
+        chat = await bot.get_chat(message.chat.id)
+        
+        group_title = getattr(chat, 'title', 'Unknown Group')
+        group_username = getattr(chat, 'username', None)
+        group_url = ""
+        
+        if group_username:
+            group_url = f"https://t.me/{group_username}"
+        else:
+            try:
+                group_url = await bot.export_chat_invite_link(message.chat.id)
+            except Exception as e:
+                logger.warning(f"Could not export invite link: {e}")
+                group_url = "No URL available"
+        
+        import aiomysql
+        conn = await aiomysql.connect(**DB_CONFIG)
+        async with conn.cursor() as cursor:
+            await cursor.execute("""
+                SELECT COUNT(*) as contest_count, 
+                       COUNT(CASE WHEN group_title = %s THEN 1 END) as matching_contests
+                FROM contests
+            """, (group_title,))
+            stats = await cursor.fetchone()
+            
+        conn.close()
+        
+        text = f"🏢 **Group Information:**\n\n"
+        text += f"**Name:** {group_title}\n"
+        text += f"**ID:** `{message.chat.id}`\n"
+        text += f"**URL:** `{group_url}`\n"
+        text += f"**Username:** @{group_username or 'None'}\n\n"
+        text += f"📊 **Statistics:**\n"
+        text += f"• Total contests: {stats[0]}\n"
+        text += f"• Matching contests: {stats[1]}\n\n"
+        text += f"💡 **Copy this info for creating contests:**\n"
+        text += f"• Group Title: `{group_title}`\n"
+        text += f"• Group URL: `{group_url}`\n"
+        
+        await message.answer(text, parse_mode="Markdown")
+        
+    except Exception as e:
+        logger.error(f"Error getting group info: {e}")
+        await message.answer(f"Error getting group info: {e}")
+
+@dp.message(Command("admin_help"))
+async def admin_help_command(message: types.Message):
+    logger.info(f"Admin help command by user {message.from_user.id} in chat {message.chat.id}")
+    
+    is_admin = False
+    
+    if message.chat.type == "private" and ADMIN_ID and message.from_user.id == ADMIN_ID:
+        is_admin = True
+    elif message.chat.id in ALLOWED_CHATS:
+        try:
+            chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+            if chat_member.status in ["creator", "administrator"]:
+                is_admin = True
+        except Exception as e:
+            logger.error(f"Error checking admin permissions: {e}")
+    
+    if not is_admin:
+        await message.answer("❌ You don't have permission to view admin commands.")
+        return
+    
+    help_text = """
+🤖 **Admin Commands Help**
+
+**🎁 Prize Management:**
+• `/create_prize "Name" type "Description" "Data"` - Create new prize
+• `/list_prizes` - Show all prizes
+• Types: `account`, `link`, `code`, `text`
+
+**🏢 Group Management:**
+• `/my_groups` - Show your groups from database
+• `/group_info` - Show current group information
+
+**🎯 Contest Management:**
+• `/create_contest name time winners prizes` - Create contest
+• `/start_giveaway contest_id` - Start giveaway
+• `/end_giveaway` - End current giveaway
+
+**💡 Examples:**
+```
+/create_prize "Steam Account" account "Premium account" "login:user123\npassword:pass456"
+/create_prize "Game Code" code "Steam game code" "ABCD-EFGH-IJKL-MNOP"
+/my_groups
+/group_info
+```
+
+**🔗 Web Interface:**
+• Prizes are shown at: `https://ahgan.coonlink.com/giftgiver/card/show/code/{security_code}`
+• Users get web links when they use `/claim`
+
+**📝 Notes:**
+• Commands work in private messages (if you're admin)
+• Commands work in allowed groups (if you're admin)
+• Group info is automatically saved when creating contests
+"""
+    
+    await message.answer(help_text, parse_mode="Markdown")
 
 async def _check_admin_permissions(message: types.Message) -> bool:
     try:
