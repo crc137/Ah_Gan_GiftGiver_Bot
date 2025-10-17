@@ -658,23 +658,55 @@ async def countdown_timer(duration: int, message_id: int, chat_id: int, has_imag
             time_str = f"{minutes}m {seconds}s"
         else:
             time_str = f"{seconds}s"
-        
-        countdown_text = f"⏳ Осталось {time_str}"
-        
-        if has_image:
-            await safe_edit_message(
-                bot.edit_message_caption,
-                chat_id=chat_id,
-                message_id=message_id,
-                caption=countdown_text
-            )
-        else:
-            await safe_edit_message(
-                bot.edit_message_text,
-                chat_id=chat_id,
-                message_id=message_id,
-                text=countdown_text
-            )
+
+        try:
+            if has_image:
+                current_message = await bot.get_chat(chat_id).get_message(message_id)
+                if current_message and current_message.caption:
+                    original_caption = current_message.caption
+                    import re
+                    updated_caption = re.sub(r'⏰ Ends: .*', f'⏰ Ends: {time_str} remaining', original_caption)
+                    if updated_caption == original_caption:
+                        updated_caption = original_caption + f"\n\n⏳ Remaining: {time_str}"
+                    
+                    await safe_edit_message(
+                        bot.edit_message_caption,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        caption=updated_caption
+                    )
+            else:
+                current_message = await bot.get_chat(chat_id).get_message(message_id)
+                if current_message and current_message.text:
+                    original_text = current_message.text
+                    import re
+                    updated_text = re.sub(r'⏰ Ends: .*', f'⏰ Ends: {time_str} remaining', original_text)
+                    if updated_text == original_text:
+                        updated_text = original_text + f"\n\n⏳ Remaining: {time_str}"
+                    
+                    await safe_edit_message(
+                        bot.edit_message_text,
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=updated_text
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to update countdown in message: {e}")
+            countdown_text = f"⏳ Remaining {time_str}"
+            if has_image:
+                await safe_edit_message(
+                    bot.edit_message_caption,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    caption=countdown_text
+                )
+            else:
+                await safe_edit_message(
+                    bot.edit_message_text,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text=countdown_text
+                )
 
 async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     global current_contest_id, giveaway_message_id, giveaway_chat_id, giveaway_has_image
@@ -837,9 +869,9 @@ async def notify_winners(winners: list, contest_name: str):
     for winner in winners:
         try:
             notification_text = (
-                f"🎉 Поздравляем! Вы выиграли приз в розыгрыше '{contest_name}'!\n\n"
-                f"🏆 Для получения приза используйте команду /claim в личных сообщениях с ботом.\n\n"
-                f"Удачи в следующих розыгрышах! 🌟"
+                f"🎉 Congratulations! You won a prize in the '{contest_name}' giveaway!\n\n"
+                f"🏆 To claim your prize, use the /claim command in private messages with the bot.\n\n"
+                f"Good luck in future giveaways! 🌟"
             )
             
             await bot.send_message(
@@ -1443,7 +1475,7 @@ async def my_rewards_command(message: types.Message):
     user_id = message.from_user.id
     
     if message.chat.type != "private":
-        await message.answer("💬 Эта команда работает только в личных сообщениях с ботом! 🎁")
+        await message.answer("💬 This command only works in private messages with the bot! 🎁")
         return
     
     try:
@@ -1451,28 +1483,28 @@ async def my_rewards_command(message: types.Message):
         rewards = await get_user_rewards(user_id, DB_CONFIG)
         
         if not rewards:
-            await message.answer("😿 У вас пока нет призов. Участвуйте в розыгрышах! 🎯")
+            await message.answer("😿 You don't have any prizes yet. Participate in giveaways! 🎯")
             return
         
-        message_text = "🏆 **Ваши призы:**\n\n"
+        message_text = "🏆 **Your Prizes:**\n\n"
         
         for reward in rewards:
-            status = "✅ Забран" if reward['claimed_at'] else "⏳ Ожидает"
+            status = "✅ Claimed" if reward['claimed_at'] else "⏳ Pending"
             message_text += f"🎁 **{reward['prize_name']}**\n"
-            message_text += f"📅 Конкурс: {reward['contest_name']}\n"
-            message_text += f"🏅 Место: {reward['position']}\n"
-            message_text += f"📊 Статус: {status}\n"
+            message_text += f"📅 Contest: {reward['contest_name']}\n"
+            message_text += f"🏅 Position: {reward['position']}\n"
+            message_text += f"📊 Status: {status}\n"
             if reward['claimed_at']:
-                message_text += f"⏰ Забран: {reward['claimed_at']}\n"
+                message_text += f"⏰ Claimed: {reward['claimed_at']}\n"
             message_text += "\n"
         
-        message_text += "💡 Используйте /claim для получения неполученных призов!"
+        message_text += "💡 Use /claim to get unclaimed prizes!"
         
         await message.answer(message_text, parse_mode="Markdown")
         claim_logger.info(f"User {user_id} requested their rewards")
         
     except Exception as e:
-        await message.answer("❌ Ошибка при получении призов. Попробуйте позже.")
+        await message.answer("❌ Error getting prizes. Please try again later.")
         logger.error(f"Error getting user rewards: {e}")
 
 @dp.message(Command("help"))
