@@ -547,19 +547,28 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
                         message_id=giveaway_message_id,
                         caption=NOBODY_JOINED_GIVEAWAY
                     )
+                    logger.info(f"Successfully updated giveaway message - no participants (image)")
                 except Exception as e:
                     logger.warning(f"Failed to edit caption for no participants, falling back to text edit: {e}")
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=giveaway_chat_id,
+                            message_id=giveaway_message_id,
+                            text=NOBODY_JOINED_GIVEAWAY
+                        )
+                        logger.info(f"Successfully updated giveaway message - no participants (text fallback)")
+                    except Exception as e2:
+                        logger.error(f"Failed to update giveaway message for no participants: {e2}")
+            else:
+                try:
                     await bot.edit_message_text(
                         chat_id=giveaway_chat_id,
                         message_id=giveaway_message_id,
                         text=NOBODY_JOINED_GIVEAWAY
                     )
-            else:
-                await bot.edit_message_text(
-                    chat_id=giveaway_chat_id,
-                    message_id=giveaway_message_id,
-                    text=NOBODY_JOINED_GIVEAWAY
-                )
+                    logger.info(f"Successfully updated giveaway message - no participants")
+                except Exception as e:
+                    logger.error(f"Failed to update giveaway message for no participants: {e}")
             current_contest_id = None
             giveaway_message_id = None
             giveaway_chat_id = None
@@ -630,8 +639,22 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
                     reply_markup=builder.as_markup(),
                     parse_mode="Markdown"
                 )
+                logger.info(f"Successfully updated giveaway message with results (image)")
             except Exception as e:
                 logger.warning(f"Failed to edit caption, falling back to text edit: {e}")
+                try:
+                    await bot.edit_message_text(
+                        chat_id=giveaway_chat_id,
+                        message_id=giveaway_message_id,
+                        text=text,
+                        reply_markup=builder.as_markup(),
+                        parse_mode="Markdown"
+                    )
+                    logger.info(f"Successfully updated giveaway message with results (text fallback)")
+                except Exception as e2:
+                    logger.error(f"Failed to update giveaway message: {e2}")
+        else:
+            try:
                 await bot.edit_message_text(
                     chat_id=giveaway_chat_id,
                     message_id=giveaway_message_id,
@@ -639,14 +662,9 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
                     reply_markup=builder.as_markup(),
                     parse_mode="Markdown"
                 )
-        else:
-            await bot.edit_message_text(
-                chat_id=giveaway_chat_id,
-                message_id=giveaway_message_id,
-                text=text,
-                reply_markup=builder.as_markup(),
-                parse_mode="Markdown"
-            )
+                logger.info(f"Successfully updated giveaway message with results")
+            except Exception as e:
+                logger.error(f"Failed to update giveaway message: {e}")
 
         current_contest_id = None
         giveaway_message_id = None
@@ -1321,18 +1339,36 @@ async def cancel_giveaway_command(message: types.Message):
             return
         
         cancel_text = f"Giveaway '{contest['name']}' has been cancelled.\nThank you for participating, better luck next time! 🌷"
+        
         if giveaway_has_image:
-            await bot.edit_message_caption(
-                chat_id=giveaway_chat_id,
-                message_id=giveaway_message_id,
-                caption=cancel_text
-            )
+            try:
+                await bot.edit_message_caption(
+                    chat_id=giveaway_chat_id,
+                    message_id=giveaway_message_id,
+                    caption=cancel_text
+                )
+                logger.info(f"Successfully updated giveaway message - cancelled (image)")
+            except Exception as e:
+                logger.warning(f"Failed to edit caption for cancellation, falling back to text edit: {e}")
+                try:
+                    await bot.edit_message_text(
+                        chat_id=giveaway_chat_id,
+                        message_id=giveaway_message_id,
+                        text=cancel_text
+                    )
+                    logger.info(f"Successfully updated giveaway message - cancelled (text fallback)")
+                except Exception as e2:
+                    logger.error(f"Failed to update giveaway message for cancellation: {e2}")
         else:
-            await bot.edit_message_text(
-                chat_id=giveaway_chat_id,
-                message_id=giveaway_message_id,
-                text=cancel_text
-            )
+            try:
+                await bot.edit_message_text(
+                    chat_id=giveaway_chat_id,
+                    message_id=giveaway_message_id,
+                    text=cancel_text
+                )
+                logger.info(f"Successfully updated giveaway message - cancelled")
+            except Exception as e:
+                logger.error(f"Failed to update giveaway message for cancellation: {e}")
         
         participants.clear()
         winners.clear()
