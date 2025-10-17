@@ -58,7 +58,7 @@ async def init_database(config):
                     contest_id INT NOT NULL,
                     position INT NOT NULL,
                     winner_user_id BIGINT NOT NULL,
-                    claimed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    claimed_at TIMESTAMP NULL,
                     security_code VARCHAR(32) NOT NULL,
                     FOREIGN KEY (contest_id) REFERENCES contests(id) ON DELETE CASCADE,
                     UNIQUE KEY unique_winner_prize (contest_id, position, winner_user_id)
