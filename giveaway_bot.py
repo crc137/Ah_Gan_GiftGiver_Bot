@@ -1362,6 +1362,8 @@ async def handle_any_message(message: types.Message):
 
 if __name__ == "__main__":
     async def main():   
+        global current_contest_id, participants, winners, giveaway_task
+        
         validate_config()
         from db import init_database
         await init_database(DB_CONFIG)
