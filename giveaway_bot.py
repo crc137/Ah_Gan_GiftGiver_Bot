@@ -17,6 +17,15 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import pytz
 
+DAYS_MUST_BE_POSITIVE = "Days must be a positive number"
+HOURS_MUST_BE_POSITIVE = "Hours must be a positive number"
+MINUTES_MUST_BE_POSITIVE = "Minutes must be a positive number"
+MONTHS_MUST_BE_POSITIVE = "Months must be a positive number"
+DAYS_CANNOT_EXCEED_365 = "Days cannot exceed 365"
+HOURS_CANNOT_EXCEED_8760 = "Hours cannot exceed 8760 (365 days)"
+MINUTES_CANNOT_EXCEED_1440 = "Minutes cannot exceed 1440 (24 hours)"
+MONTHS_CANNOT_EXCEED_12 = "Months cannot exceed 12"
+
 load_dotenv()
 
 try:
@@ -115,9 +124,9 @@ def _parse_days_format(duration_str: str) -> int:
         days = int(duration_str)
     
     if days <= 0:
-        raise ValueError("Days must be a positive number")
+        raise ValueError(DAYS_MUST_BE_POSITIVE)
     if days > 365:
-        raise ValueError("Duration cannot exceed 365 days")
+        raise ValueError(DAYS_CANNOT_EXCEED_365)
     
     return days * 24 * 3600
 
@@ -129,55 +138,67 @@ def _parse_combined_format(duration_str: str) -> int:
         if part.startswith('m'):
             months = int(part[1:])
             if months <= 0:
-                raise ValueError("Months must be a positive number")
+                raise ValueError(MONTHS_MUST_BE_POSITIVE)
             if months > 12:
-                raise ValueError("Months cannot exceed 12")
+                raise ValueError(MONTHS_CANNOT_EXCEED_12)
             total_seconds += months * 30 * 24 * 3600
         elif part.startswith('d'):
             days = int(part[1:])
             if days <= 0:
-                raise ValueError("Days must be a positive number")
+                raise ValueError(DAYS_MUST_BE_POSITIVE)
             if days > 365:
-                raise ValueError("Days cannot exceed 365")
+                raise ValueError(DAYS_CANNOT_EXCEED_365)
             total_seconds += days * 24 * 3600
     
     if total_seconds > 365 * 24 * 3600:
-        raise ValueError("Total duration cannot exceed 365 days")
+        raise ValueError(TOTAL_DURATION_CANNOT_EXCEED_365_DAYS)
     
     return total_seconds
 
+def _parse_days_text(duration_str: str) -> int:
+    days = int(''.join(filter(str.isdigit, duration_str)))
+    if days <= 0:
+        raise ValueError(DAYS_MUST_BE_POSITIVE)
+    if days > 365:
+        raise ValueError(DAYS_CANNOT_EXCEED_365)
+    return days * 24 * 3600
+
+def _parse_minutes_text(duration_str: str) -> int:
+    minutes = int(''.join(filter(str.isdigit, duration_str)))
+    if minutes <= 0:
+        raise ValueError(MINUTES_MUST_BE_POSITIVE)
+    if minutes > 1440:
+        raise ValueError(MINUTES_CANNOT_EXCEED_1440)
+    return minutes * 60
+
+def _parse_hours_text(duration_str: str) -> int:
+    hours = int(''.join(filter(str.isdigit, duration_str)))
+    if hours <= 0:
+        raise ValueError(HOURS_MUST_BE_POSITIVE)
+    if hours > 8760:
+        raise ValueError(HOURS_CANNOT_EXCEED_8760)
+    return hours * 3600
+
+def _parse_months_text(duration_str: str) -> int:
+    months = int(''.join(filter(str.isdigit, duration_str)))
+    if months <= 0:
+        raise ValueError(MONTHS_MUST_BE_POSITIVE)
+    if months > 12:
+        raise ValueError(MONTHS_CANNOT_EXCEED_12)
+    return months * 30 * 24 * 3600
+
 def _parse_text_format(duration_str: str) -> int:
-    if 'д' in duration_str or 'day' in duration_str:
-        days = int(''.join(filter(str.isdigit, duration_str)))
-        if days <= 0:
-            raise ValueError("Days must be a positive number")
-        if days > 365:
-            raise ValueError("Days cannot exceed 365")
-        return days * 24 * 3600
+    if 'DAY' in duration_str or 'day' in duration_str:
+        return _parse_days_text(duration_str)
     
-    elif 'мин' in duration_str or 'minute' in duration_str:
-        minutes = int(''.join(filter(str.isdigit, duration_str)))
-        if minutes <= 0:
-            raise ValueError("Minutes must be a positive number")
-        if minutes > 1440:
-            raise ValueError("Minutes cannot exceed 1440 (24 hours)")
-        return minutes * 60
+    if 'MIN' in duration_str or 'minute' in duration_str:
+        return _parse_minutes_text(duration_str)
     
-    elif 'ч' in duration_str or 'hour' in duration_str:
-        hours = int(''.join(filter(str.isdigit, duration_str)))
-        if hours <= 0:
-            raise ValueError("Hours must be a positive number")
-        if hours > 8760:
-            raise ValueError("Hours cannot exceed 8760 (365 days)")
-        return hours * 3600
+    if 'HOUR' in duration_str or 'hour' in duration_str:
+        return _parse_hours_text(duration_str)
     
-    elif 'м' in duration_str or 'month' in duration_str:
-        months = int(''.join(filter(str.isdigit, duration_str)))
-        if months <= 0:
-            raise ValueError("Months must be a positive number")
-        if months > 12:
-            raise ValueError("Months cannot exceed 12")
-        return months * 30 * 24 * 3600
+    if 'MONTH' in duration_str or 'month' in duration_str:
+        return _parse_months_text(duration_str)
     
     return None
 
