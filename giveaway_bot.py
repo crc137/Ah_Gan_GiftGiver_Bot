@@ -194,7 +194,7 @@ def _parse_months_text(duration_str: str) -> int:
         raise ValueError(MONTHS_CANNOT_EXCEED_12)
     return months * 30 * 24 * 3600
 
-def _parse_text_format(duration_str: str) -> int:
+def _parse_text_format(duration_str: str) -> int | None:
     if 'DAY' in duration_str or 'day' in duration_str:
         return _parse_days_text(duration_str)
     
@@ -286,7 +286,7 @@ def validate_contest_params(duration: int, winners_count: int, prizes: list) -> 
         return False, "At least one valid prize is required"
     return True, ""
 
-async def is_giveaway_running() -> bool:
+def is_giveaway_running() -> bool:
     is_running = current_contest_id is not None
     logger.debug(f"Giveaway running check: {is_running} (contest_id: {current_contest_id})")
     return is_running
@@ -834,7 +834,7 @@ async def start_giveaway_command(message: types.Message):
         await message.answer("This chat is not authorized for giveaways.")
         return
     
-    if await is_giveaway_running():
+    if is_giveaway_running():
         await message.answer("A giveaway is already running! Please wait for it to finish before starting a new one.")
         logger.warning(f"Attempted to start giveaway while one is running by user {message.from_user.id}")
         return
@@ -1357,7 +1357,7 @@ async def cancel_giveaway_command(message: types.Message):
         await message.answer("Error checking admin status.")
         return
     
-    if not await is_giveaway_running():
+    if not is_giveaway_running():
         await message.answer("No active giveaway to cancel.")
         return
     
