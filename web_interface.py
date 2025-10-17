@@ -67,7 +67,60 @@ async def mark_prize_as_claimed(security_code: str):
     finally:
         conn.close()
 
-@app.get("/giftgiver/card/show/code/{security_code}")
+@app.get("/")
+async def root():
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Giveaway Bot Web Interface</title>
+        <meta charset="utf-8">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                text-align: center;
+                padding: 50px;
+                background: #f5f6fa;
+            }
+            h1 {
+                color: #4b6cb7;
+            }
+            .desc {
+                margin: 25px auto;
+                max-width: 550px;
+                color: #444;
+            }
+            .example {
+                color: #111;
+                background: #e1e7ed;
+                padding: 15px 20px;
+                border-radius: 8px;
+                margin-top: 25px;
+                display: inline-block;
+                font-size: 1.1em;
+                box-shadow: 0 2px 10px rgba(120,144,156,0.07);
+            }
+        </style>
+    </head>
+    <body>
+        <h1>🎉 Giveaway Bot Prize Claim Portal</h1>
+        <div class="desc">
+            <p>Welcome to the Giveaway Bot web interface.</p>
+            <p>If you're here to claim a prize, please visit the URL you received for your prize (it will look like <code>/&lt;security_code&gt;</code>).</p>
+        </div>
+        <div class="example">
+            Example: <br>
+            <strong>https://your-domain.com/ABC123XYZ</strong>
+        </div>
+        <div style="margin-top: 30px; color: #888; font-size: 0.95em;">
+            <p>Powered by Giveaway Bot.</p>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(html_content)
+
+@app.get("/{security_code}")
 async def show_prize(security_code: str):
     try:
         prize_info = await get_prize_by_security_code(security_code)
