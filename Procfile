@@ -1,1 +1,1 @@
-web: python3 giveaway_bot.py
+web: python3 main.py
