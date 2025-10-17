@@ -3,3 +3,5 @@ aiomysql
 aiohttp
 python-dotenv
 pytz
+fastapi
+uvicorn
