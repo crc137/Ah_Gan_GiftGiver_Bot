@@ -6,7 +6,6 @@ import shlex
 import json
 import os
 import aiohttp
-import aiomysql
 import logging
 import re
 from aiogram import Bot, Dispatcher, types
@@ -370,6 +369,7 @@ def create_giveaway_start_message(contest_name: str, duration: int, winners_coun
     return message
 
 async def get_db_connection(max_retries=3, retry_delay=5):
+    import aiomysql
     for attempt in range(max_retries):
         try:
             logger.info(f"Attempting database connection (attempt {attempt + 1}/{max_retries})")
@@ -501,83 +501,18 @@ async def list_contests():
         conn.close()
 
 async def save_state_to_db():
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            participants_json = json.dumps([serialize_user(u) for u in participants.values()])
-            winners_json = json.dumps(winners)
-            claimed_winners_json = json.dumps(list(claimed_winners))
-            
-            await cursor.execute("SELECT id FROM giveaway_state LIMIT 1")
-            existing = await cursor.fetchone()
-            
-            if existing:
-                await cursor.execute("""
-                    UPDATE giveaway_state SET 
-                    participants = %s, winners = %s, claimed_winners = %s,
-                    giveaway_message_id = %s, giveaway_chat_id = %s, giveaway_has_image = %s,
-                    current_contest_id = %s
-                    WHERE id = 1
-                """, (participants_json, winners_json, claimed_winners_json, 
-                      giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id))
-            else:
-                await cursor.execute("""
-                    INSERT INTO giveaway_state 
-                    (participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (participants_json, winners_json, claimed_winners_json,
-                      giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id))
-            await conn.commit()
-    finally:
-        conn.close()
+    from db import save_state_to_db as db_save_state
+    await db_save_state(participants, winners, claimed_winners, giveaway_message_id, 
+                       giveaway_chat_id, giveaway_has_image, current_contest_id, DB_CONFIG)
 
 async def load_state_from_db():
     global participants, winners, claimed_winners
     global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
     
-    conn = await get_db_connection()
-    try:
-        async with conn.cursor() as cursor:
-            await cursor.execute("""
-                SELECT participants, winners, claimed_winners, giveaway_message_id, 
-                       giveaway_chat_id, giveaway_has_image, current_contest_id
-                FROM giveaway_state LIMIT 1
-            """)
-            result = await cursor.fetchone()
-            
-            if result:
-                participants_data = json.loads(result[0] or '[]')
-                participants = {u["id"]: deserialize_user(u) for u in participants_data}
-                
-                winners = json.loads(result[1] or '{}')
-                claimed_winners = set(json.loads(result[2] or '[]'))
-                
-                giveaway_message_id = result[3]
-                giveaway_chat_id = result[4]
-                giveaway_has_image = bool(result[5])
-                current_contest_id = result[6]
-                
-                logger.info(f"Restored state: contest_id={current_contest_id}, participants={len(participants)}, winners={len(winners)}")
-            else:
-                participants = {}
-                winners = {}
-                claimed_winners = set()
-                giveaway_message_id = None
-                giveaway_chat_id = None
-                giveaway_has_image = False
-                current_contest_id = None
-                logger.info("No existing state found, starting fresh")
-    except Exception as e:
-        logger.error(f"Error loading state from database: {e}")
-        participants = {}
-        winners = {}
-        claimed_winners = set()
-        giveaway_message_id = None
-        giveaway_chat_id = None
-        giveaway_has_image = False
-        current_contest_id = None
-    finally:
-        conn.close()
+    from db import load_state_from_db as db_load_state
+    participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id = await db_load_state(DB_CONFIG)
+    
+    logger.info(f"Restored state: contest_id={current_contest_id}, participants={len(participants)}, winners={len(winners)}")
 
 @dp.callback_query(lambda c: c.data == "join")
 async def join_callback(callback: types.CallbackQuery):
@@ -600,99 +535,109 @@ async def join_callback(callback: types.CallbackQuery):
 
 async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
     global current_contest_id, giveaway_message_id, giveaway_chat_id, giveaway_has_image
-    await asyncio.sleep(duration)
-    if not participants:
-        if giveaway_has_image:
-            try:
-                await bot.edit_message_caption(
-                    chat_id=giveaway_chat_id,
-                    message_id=giveaway_message_id,
-                    caption=NOBODY_JOINED_GIVEAWAY
-                )
-            except Exception as e:
-                logger.warning(f"Failed to edit caption for no participants, falling back to text edit: {e}")
+    
+    try:
+        await asyncio.sleep(duration)
+        if not participants:
+            if giveaway_has_image:
+                try:
+                    await bot.edit_message_caption(
+                        chat_id=giveaway_chat_id,
+                        message_id=giveaway_message_id,
+                        caption=NOBODY_JOINED_GIVEAWAY
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to edit caption for no participants, falling back to text edit: {e}")
+                    await bot.edit_message_text(
+                        chat_id=giveaway_chat_id,
+                        message_id=giveaway_message_id,
+                        text=NOBODY_JOINED_GIVEAWAY
+                    )
+            else:
                 await bot.edit_message_text(
                     chat_id=giveaway_chat_id,
                     message_id=giveaway_message_id,
                     text=NOBODY_JOINED_GIVEAWAY
                 )
-        else:
-            await bot.edit_message_text(
-                chat_id=giveaway_chat_id,
-                message_id=giveaway_message_id,
-                text=NOBODY_JOINED_GIVEAWAY
-            )
-        current_contest_id = None
-        giveaway_message_id = None
-        giveaway_chat_id = None
-        giveaway_has_image = False
+            current_contest_id = None
+            giveaway_message_id = None
+            giveaway_chat_id = None
+            giveaway_has_image = False
+            
+            await save_state_to_db()
+            return
+
+        winners_count = min(winners_count, len(participants))
+        secure_random = secrets.SystemRandom()
+        selected_winners = secure_random.sample(list(participants.values()), winners_count)
+
+        from db import assign_winner_to_prize_position
         
-        await save_state_to_db()
-        return
+        winners.clear()
+        for i, winner in enumerate(selected_winners):
+            position = i + 1  
+            await assign_winner_to_prize_position(current_contest_id, position, winner.id, DB_CONFIG)
+            prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
+            winners[winner.id] = prize_name
 
-    winners_count = min(winners_count, len(participants))
-    secure_random = secrets.SystemRandom()
-    selected_winners = secure_random.sample(list(participants.values()), winners_count)
+        text = (
+            "✨ The giveaway is over!\n"
+            "Thank you for taking part — your energy made it special 💕\n\n"
+            "🎀 Winner:\n"
+        )
 
-    from db import assign_winner_to_prize_position
-    
-    winners.clear()
-    for i, winner in enumerate(selected_winners):
-        position = i + 1  
-        await assign_winner_to_prize_position(current_contest_id, position, winner.id, DB_CONFIG)
-        prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
-        winners[winner.id] = prize_name
-
-    text = (
-        "✨ The giveaway is over!\n"
-        "Thank you for taking part — your energy made it special 💕\n\n"
-        "🎀 Winner:\n"
-    )
-
-    for i, winner in enumerate(selected_winners):
-        position = i + 1
-        if position == 1:
-            position_emoji = "🥇"
-        elif position == 2:
-            position_emoji = "🥈"
-        elif position == 3:
-            position_emoji = "🥉"
-        else:
-            position_emoji = "🏅"
-        prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
-        
-        if winner.username:
-            display_name = f"@{winner.username}"
-        else:
-            name = f"{winner.first_name} {winner.last_name or ''}".strip()
-            if name:
-                display_name = f"[{name}](tg://user?id={winner.id})"
+        for i, winner in enumerate(selected_winners):
+            position = i + 1
+            if position == 1:
+                position_emoji = "🥇"
+            elif position == 2:
+                position_emoji = "🥈"
+            elif position == 3:
+                position_emoji = "🥉"
             else:
-                display_name = f"[Anonymous](tg://user?id={winner.id})"
-        
-        text += f"{position_emoji} {_ordinal_suffix(position)} place: {display_name} - {prize_name}\n"
+                position_emoji = "🏅"
+            prize_name = prizes[i] if i < len(prizes) else f"Prize {position}"
+            
+            if winner.username:
+                display_name = f"@{winner.username}"
+            else:
+                name = f"{winner.first_name} {winner.last_name or ''}".strip()
+                if name:
+                    display_name = f"[{name}](tg://user?id={winner.id})"
+                else:
+                    display_name = f"[Anonymous](tg://user?id={winner.id})"
+            
+            text += f"{position_emoji} {_ordinal_suffix(position)} place: {display_name} - {prize_name}\n"
 
-    text += (
-        "\nTap the button below to claim your prize 🎁\n"
-        "Good luck in the next drop! 🌷"
-    )
+        text += (
+            "\nTap the button below to claim your prize 🎁\n"
+            "Good luck in the next drop! 🌷"
+        )
 
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎁 Claim Prize", callback_data="claim")
+        builder = InlineKeyboardBuilder()
+        builder.button(text="🎁 Claim Prize", callback_data="claim")
 
-    if giveaway_has_image:
-        MAX_CAPTION = 1024
-        caption = text if len(text) <= MAX_CAPTION else (text[:MAX_CAPTION - 1] + "…")
-        try:
-            await bot.edit_message_caption(
-                chat_id=giveaway_chat_id,
-                message_id=giveaway_message_id,
-                caption=caption,
-                reply_markup=builder.as_markup(),
-                parse_mode="Markdown"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to edit caption, falling back to text edit: {e}")
+        if giveaway_has_image:
+            MAX_CAPTION = 1024
+            caption = text if len(text) <= MAX_CAPTION else (text[:MAX_CAPTION - 1] + "…")
+            try:
+                await bot.edit_message_caption(
+                    chat_id=giveaway_chat_id,
+                    message_id=giveaway_message_id,
+                    caption=caption,
+                    reply_markup=builder.as_markup(),
+                    parse_mode="Markdown"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to edit caption, falling back to text edit: {e}")
+                await bot.edit_message_text(
+                    chat_id=giveaway_chat_id,
+                    message_id=giveaway_message_id,
+                    text=text,
+                    reply_markup=builder.as_markup(),
+                    parse_mode="Markdown"
+                )
+        else:
             await bot.edit_message_text(
                 chat_id=giveaway_chat_id,
                 message_id=giveaway_message_id,
@@ -700,21 +645,21 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
                 reply_markup=builder.as_markup(),
                 parse_mode="Markdown"
             )
-    else:
-        await bot.edit_message_text(
-            chat_id=giveaway_chat_id,
-            message_id=giveaway_message_id,
-            text=text,
-            reply_markup=builder.as_markup(),
-            parse_mode="Markdown"
-        )
 
-    current_contest_id = None
-    giveaway_message_id = None
-    giveaway_chat_id = None
-    giveaway_has_image = False
+        current_contest_id = None
+        giveaway_message_id = None
+        giveaway_chat_id = None
+        giveaway_has_image = False
 
-    await save_state_to_db()
+        await save_state_to_db()
+        
+    except Exception as e:
+        logger.error(f"Error in end_giveaway: {e}")
+        current_contest_id = None
+        giveaway_message_id = None
+        giveaway_chat_id = None
+        giveaway_has_image = False
+        await save_state_to_db()
 
 @dp.callback_query(lambda c: c.data == "claim")
 async def claim_prize(callback: types.CallbackQuery):
@@ -769,6 +714,7 @@ async def claim_command(message: types.Message):
         position_emoji = "🏅"
     message_text += f"{position_emoji} You won {_ordinal_suffix(position)} place!\n"
     message_text += f"🎁 Prize: {winner_prize['prize_name']}\n"
+    message_text += f"🏆 Contest ID: {winner_prize['contest_id']}\n"
     
     if winner_prize['prize_type'] == 'link':
         builder.button(text="🎀 Claim Prize", url=winner_prize['prize_value'])
@@ -792,19 +738,69 @@ async def _check_admin_permissions(message: types.Message) -> bool:
     except Exception:
         return False
 
-async def _list_available_contests(message: types.Message):
-    contests = await list_contests()
-    if not contests:
+
+
+@dp.message(Command("start_giveaway"))
+async def start_giveaway_command(message: types.Message):
+    logger.info(f"Start giveaway command by user {message.from_user.id} in chat {message.chat.id}")
+    logger.info(f"ALLOWED_CHATS: {ALLOWED_CHATS}")
+    logger.info(f"Chat type: {message.chat.type}")
+    
+    if message.chat.id not in ALLOWED_CHATS:
+        logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
         await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
-    text = "Available contests:\n"
-    for contest in contests:
-        text += f"ID {contest['id']}: {contest['name']} ({contest['duration']}s, {contest['winners_count']} winners)\n"
-    await message.answer(text)
-
-async def _send_giveaway_message(message: types.Message, contest: dict, builder: InlineKeyboardBuilder):
-    global giveaway_has_image
+    if is_giveaway_running():
+        await message.answer("A giveaway is already running! Please wait for it to finish before starting a new one.")
+        logger.warning(f"Attempted to start giveaway while one is running by user {message.from_user.id}")
+        return
+    
+    try:
+        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if chat_member.status not in ["creator", "administrator"]:
+            await message.answer(CHAT_NOT_AUTHORIZED)
+            return
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
+        return
+    
+    args = message.text.split()[1:]
+    if not args:
+        contests = await list_contests()
+        if not contests:
+            await message.answer(CHAT_NOT_AUTHORIZED)
+            return
+        
+        text = "Available contests:\n"
+        for contest in contests:
+            text += f"ID {contest['id']}: {contest['name']} ({contest['duration']}s, {contest['winners_count']} winners)\n"
+        await message.answer(text)
+        return
+    
+    try:
+        contest_id = int(args[0])
+    except ValueError:
+        await message.answer(CHAT_NOT_AUTHORIZED)
+        return
+    
+    contest = await get_contest_by_id(contest_id)
+    if not contest:
+        await message.answer(CHAT_NOT_AUTHORIZED)
+        return
+    
+    global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
+    
+    participants.clear()
+    winners.clear()
+    claimed_winners.clear()
+    current_contest_id = contest_id
+    
+    giveaway_has_image = False 
+    
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🎁 Join", callback_data="join")
     
     if contest['image_url']:
         try:
@@ -835,58 +831,7 @@ async def _send_giveaway_message(message: types.Message, contest: dict, builder:
             create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
             reply_markup=builder.as_markup()
         )
-    
-    return sent_msg
-
-@dp.message(Command("start_giveaway"))
-async def start_giveaway_command(message: types.Message):
-    logger.info(f"Start giveaway command by user {message.from_user.id} in chat {message.chat.id}")
-    logger.info(f"ALLOWED_CHATS: {ALLOWED_CHATS}")
-    logger.info(f"Chat type: {message.chat.type}")
-    
-    if message.chat.id not in ALLOWED_CHATS:
-        logger.warning(f"Chat {message.chat.id} not in whitelist. Allowed chats: {ALLOWED_CHATS}")
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    if is_giveaway_running():
-        await message.answer("A giveaway is already running! Please wait for it to finish before starting a new one.")
-        logger.warning(f"Attempted to start giveaway while one is running by user {message.from_user.id}")
-        return
-    
-    if not await _check_admin_permissions(message):
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    args = message.text.split()[1:]
-    if not args:
-        await _list_available_contests(message)
-        return
-    
-    try:
-        contest_id = int(args[0])
-    except ValueError:
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    contest = await get_contest_by_id(contest_id)
-    if not contest:
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
-    
-    participants.clear()
-    winners.clear()
-    claimed_winners.clear()
-    current_contest_id = contest_id
-    
-    giveaway_has_image = False 
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎁 Join", callback_data="join")
-    
-    sent_msg = await _send_giveaway_message(message, contest, builder)
+        giveaway_has_image = False
 
     giveaway_message_id = sent_msg.message_id
     giveaway_chat_id = sent_msg.chat.id
@@ -894,44 +839,7 @@ async def start_giveaway_command(message: types.Message):
     
     giveaway_task = asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
 
-async def _list_available_contests(message: types.Message) -> None:
-    contests = await list_contests()
-    if not contests:
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    text = "Available contests:\n"
-    for contest in contests:
-        text += f"ID {contest['id']}: {contest['name']} ({contest['duration']}s, {contest['winners_count']} winners)\n"
-    await message.answer(text)
 
-async def _send_giveaway_message(message: types.Message, contest: dict, builder: InlineKeyboardBuilder) -> types.Message:
-    if not contest['image_url']:
-        return await message.answer(
-            create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-            reply_markup=builder.as_markup()
-        )
-    
-    try:
-        photo_file = await download_image(contest['image_url'])
-        if photo_file is not None:
-            return await message.answer_photo(
-                photo=photo_file,
-                caption=create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-                reply_markup=builder.as_markup()
-            )
-        else:
-            return await message.answer(
-                create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-                reply_markup=builder.as_markup()
-            )
-    except Exception as e:
-        logger.warning(f"Failed to download image from {contest['image_url']}: {e}")
-        warning_msg = "The image is in an unsupported format (AVIF/HEIC). The contest has been created without an image.\n\n"
-        return await message.answer(
-            warning_msg + create_giveaway_start_message(contest['name'], contest['duration'], contest['winners_count'], contest['prizes']),
-            reply_markup=builder.as_markup()
-        )
 
 async def _initialize_giveaway_state(contest_id: int) -> None:
     global giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
@@ -944,47 +852,7 @@ async def _initialize_giveaway_state(contest_id: int) -> None:
 
 @dp.message(Command("contest"))
 async def contest_command(message: types.Message):
-    if message.chat.id not in ALLOWED_CHATS:
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    try:
-        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        if chat_member.status not in ["creator", "administrator"]:
-            await message.answer(CHAT_NOT_AUTHORIZED)
-            return
-    except Exception:
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    args = message.text.split()[1:]
-    if not args:
-        await _list_available_contests(message)
-        return
-    
-    try:
-        contest_id = int(args[0])
-    except ValueError:
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    contest = await get_contest_by_id(contest_id)
-    if not contest:
-        await message.answer(CHAT_NOT_AUTHORIZED)
-        return
-    
-    await _initialize_giveaway_state(contest_id)
-    
-    builder = InlineKeyboardBuilder()
-    builder.button(text="🎁 Join", callback_data="join")
-    
-    sent_msg = await _send_giveaway_message(message, contest, builder)
-
-    giveaway_message_id = sent_msg.message_id
-    giveaway_chat_id = sent_msg.chat.id
-    await save_state_to_db()
-    
-    giveaway_task = asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+    await start_giveaway_command(message)
 
 def _validate_image_url(url: str) -> bool:
     if not url or not is_safe_link(url):
@@ -1115,18 +983,6 @@ async def download_image(url: str) -> BufferedInputFile | None:
         logger.warning(f"Unexpected error downloading image from {url}: {e}")
         return None
 
-async def _check_admin_permissions(message: types.Message) -> bool:
-    try:
-        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        if chat_member.status not in ["creator", "administrator"]:
-            await message.answer("Only admins can create contests.")
-            return False
-        return True
-    except Exception as e:
-        logger.error(f"Error checking admin status: {e}")
-        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
-        return False
-
 async def _get_attached_image_url(message: types.Message) -> str | None:
     if not message.photo:
         return None
@@ -1192,7 +1048,14 @@ async def create_contest_command(message: types.Message):
         await message.answer(CHAT_NOT_AUTHORIZED)
         return
     
-    if not await _check_admin_permissions(message):
+    try:
+        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if chat_member.status not in ["creator", "administrator"]:
+            await message.answer(CHAT_NOT_AUTHORIZED)
+            return
+    except Exception as e:
+        logger.error(f"Error checking admin status: {e}")
+        await message.answer(ERROR_CHECKING_ADMIN_STATUS)
         return
     
     image_url = await _get_attached_image_url(message)
@@ -1498,6 +1361,19 @@ if __name__ == "__main__":
         await init_database(DB_CONFIG)
         
         await load_state_from_db()
+        
+        if current_contest_id:
+            logger.info(f"Restoring active contest ID {current_contest_id}")
+            contest = await get_contest_by_id(current_contest_id)
+            if contest:
+                logger.info(f"Bot restored active giveaway: contest_id={current_contest_id}, participants={len(participants)}, winners={len(winners)}")
+                asyncio.create_task(end_giveaway(contest['duration'], contest['winners_count'], contest['prizes']))
+            else:
+                logger.warning("Contest not found during restore, clearing state.")
+                current_contest_id = None
+                await save_state_to_db()
+        else:
+            logger.info("No active contest to restore")
         
         logger.info("Bot starting with restored state")
         await dp.start_polling(bot)

@@ -76,6 +76,9 @@ async def init_database(config):
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
                 )
             """)
+            
+            await cursor.execute("INSERT IGNORE INTO giveaway_state (id) VALUES (1)")
+            
             await conn.commit()
             logger.info("Database tables initialized successfully")
     except Exception as e:
@@ -171,25 +174,23 @@ async def save_state_to_db(participants, winners, claimed_winners, giveaway_mess
             winners_json = json.dumps(winners)
             claimed_winners_json = json.dumps(list(claimed_winners))
             
-            await cursor.execute("SELECT id FROM giveaway_state LIMIT 1")
-            existing = await cursor.fetchone()
+            await cursor.execute("""
+                UPDATE giveaway_state SET 
+                participants = %s, winners = %s, claimed_winners = %s,
+                giveaway_message_id = %s, giveaway_chat_id = %s, giveaway_has_image = %s,
+                current_contest_id = %s
+                WHERE id = 1
+            """, (participants_json, winners_json, claimed_winners_json, 
+                  giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id))
             
-            if existing:
-                await cursor.execute("""
-                    UPDATE giveaway_state SET 
-                    participants = %s, winners = %s, claimed_winners = %s,
-                    giveaway_message_id = %s, giveaway_chat_id = %s, giveaway_has_image = %s,
-                    current_contest_id = %s
-                    WHERE id = 1
-                """, (participants_json, winners_json, claimed_winners_json, 
-                      giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id))
-            else:
+            if cursor.rowcount == 0:
                 await cursor.execute("""
                     INSERT INTO giveaway_state 
-                    (participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (id, participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id)
+                    VALUES (1, %s, %s, %s, %s, %s, %s, %s)
                 """, (participants_json, winners_json, claimed_winners_json,
                       giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id))
+            
             await conn.commit()
             logger.info("State saved to database")
     except Exception as e:
@@ -205,7 +206,7 @@ async def load_state_from_db(config):
             await cursor.execute("""
                 SELECT participants, winners, claimed_winners, giveaway_message_id, 
                        giveaway_chat_id, giveaway_has_image, current_contest_id
-                FROM giveaway_state LIMIT 1
+                FROM giveaway_state WHERE id = 1
             """)
             result = await cursor.fetchone()
             
@@ -224,7 +225,11 @@ async def load_state_from_db(config):
                 logger.info("State loaded from database")
                 return participants, winners, claimed_winners, giveaway_message_id, giveaway_chat_id, giveaway_has_image, current_contest_id
             else:
-                logger.info("No existing state found in database")
+                await cursor.execute("""
+                    INSERT INTO giveaway_state (id) VALUES (1)
+                """)
+                await conn.commit()
+                logger.info("Created initial state record in database")
                 return {}, {}, set(), None, None, False, None
     except Exception as e:
         logger.error(f"Error loading state from database: {e}")
@@ -237,7 +242,6 @@ async def create_contest_prizes(contest_id: int, prizes_list: list, config):
     try:
         async with conn.cursor() as cursor:
             for position, prize in enumerate(prizes_list, 1):
-                # Import is_safe_link function
                 from giveaway_bot import is_safe_link
                 prize_type = 'link' if is_safe_link(prize) else 'text'
                 
@@ -332,7 +336,6 @@ async def get_winner_prize_info(contest_id: int, user_id: int, config):
         conn.close()
 
 async def mark_prize_as_claimed(contest_id: int, user_id: int, config):
-    """Mark prize as claimed by updating claimed_at timestamp in prize_claims table"""
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
@@ -356,7 +359,6 @@ async def mark_prize_as_claimed(contest_id: int, user_id: int, config):
         conn.close()
 
 async def get_latest_unclaimed_prize_for_user(user_id: int, config):
-    """Get the latest unclaimed prize for a user from any contest"""
     conn = await get_db_connection(config)
     try:
         async with conn.cursor() as cursor:
