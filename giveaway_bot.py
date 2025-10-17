@@ -25,7 +25,7 @@ try:
         logging.FileHandler("logs/giveaway_bot.log"),
         logging.StreamHandler()
     ]
-except (OSError, PermissionError) as e:
+except (OSError, PermissionError):
     handlers = [logging.StreamHandler()]
 
 logging.basicConfig(
@@ -82,6 +82,8 @@ def sanitize_string(s: str) -> str:
     return s[:255]  
 
 def parse_duration_input(duration_str: str) -> int:
+    if not duration_str:
+        raise ValueError("Duration cannot be empty")
     duration_str = duration_str.lower().strip()
     
     if ':' in duration_str:
@@ -112,7 +114,10 @@ def parse_duration_input(duration_str: str) -> int:
     
     if duration_str.startswith('d'):
         try:
-            days = int(duration_str[1:])
+            days_str = duration_str[1:]
+            if not days_str:
+                raise ValueError("Days value cannot be empty")
+            days = int(days_str)
             if days <= 0:
                 raise ValueError("Days must be a positive number")
             if days > 365:
@@ -214,17 +219,14 @@ def format_duration(duration_seconds: int) -> str:
         return f"{months} месяцев"
 
 def is_safe_link(link: str) -> bool:
-    """Check if link is safe (only HTTPS, t.me, or tg:// protocols)"""
     if not link:
         return False
     return link.startswith(('https://', 't.me/', 'tg://'))
 
 def is_url(text: str) -> bool:
-    """Legacy function - use is_safe_link() instead"""
     return is_safe_link(text)
 
 def _ordinal_suffix(n: int) -> str:
-    """Get ordinal suffix for a number (1st, 2nd, 3rd, 4th, etc.)"""
     if 10 <= n % 100 <= 20:
         suffix = 'th'
     else:
@@ -254,7 +256,9 @@ def validate_contest_params(duration: int, winners_count: int, prizes: list) -> 
     return True, ""
 
 async def is_giveaway_running() -> bool:
-    return current_contest_id is not None
+    is_running = current_contest_id is not None
+    logger.debug(f"Giveaway running check: {is_running} (contest_id: {current_contest_id})")
+    return is_running
 
 def validate_config():
     errors = []
@@ -296,12 +300,12 @@ def create_giveaway_start_message(contest_name: str, duration: int, winners_coun
     message += f"⏰ Ends: {time_info}\n\n"
     
     if valid_prizes:
-        message += f"🎁 Prizes:\n"
+        message += "🎁 Prizes:\n"
         for i, prize in enumerate(valid_prizes, 1):
             position_emoji = "🥇" if i == 1 else "🥈" if i == 2 else "🥉" if i == 3 else "🏅"
             message += f"{position_emoji} {prize}\n"
     else:
-        message += f"🎁 Prizes: 🎁 Mystery Prize\n"
+        message += "🎁 Prizes: 🎁 Mystery Prize\n"
     
     message += f"\n 🏆 Winners: {winners_count}\n\n"
     message += "📌 How to participate:\n"
@@ -316,12 +320,16 @@ async def get_db_connection(max_retries=3, retry_delay=5):
     for attempt in range(max_retries):
         try:
             logger.info(f"Attempting database connection (attempt {attempt + 1}/{max_retries})")
-            return await aiomysql.connect(**DB_CONFIG)
+            conn = await aiomysql.connect(**DB_CONFIG)
+            logger.info("Database connection established successfully")
+            return conn
         except aiomysql.Error as e:
             logger.error(f"Database connection failed (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
                 await asyncio.sleep(retry_delay)
             else:
+                logger.critical("Failed to connect to database after all retries")
                 raise Exception("Failed to connect to database after retries")
 
 async def init_database():
