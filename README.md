@@ -38,6 +38,13 @@
 - `/cancel_giveaway`: Cancel the active giveaway (admin only).
 - `/claim`: Claim a prize if you're a winner (private message to the bot).
 
+### Admin Commands
+
+- `/create_prize <name> <type> <description> <data>`: Create a new prize (type: account, link, code, text).
+- `/list_prizes`: View the list of created prizes.
+- `/my_groups`: View the groups where the bot is an admin.
+- `/list_winners <contest_id>`: Show the winners of a contest.
+
 ### How Giveaways Work
 
 1. Admin creates a contest with `/create_contest`.
