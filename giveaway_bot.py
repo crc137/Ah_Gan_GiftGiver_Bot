@@ -794,20 +794,35 @@ async def end_giveaway(duration: int, winners_count: int, prizes: list[str]):
         await save_state_to_db()
 
 async def notify_winners(winners: list, contest_name: str):
+    try:
+        chat = await bot.get_chat(giveaway_chat_id)
+        group_title = chat.title if hasattr(chat, "title") and chat.title else f"ID {giveaway_chat_id}"
+        group_url = ""
+        if hasattr(chat, "username") and chat.username:
+            group_url = f"https://t.me/{chat.username}"
+    except Exception as e:
+        logger.warning(f"Could not retrieve group info for notifications: {e}")
+        group_title = f"ID {giveaway_chat_id}" if giveaway_chat_id else "the giveaway group"
+        group_url = ""
+
     for winner in winners:
         try:
             notification_text = (
                 f"🎉 Congratulations! You won a prize in the '{contest_name}' giveaway!\n\n"
-                f"🏆 To claim your prize, use the /claim command in private messages with the bot.\n\n"
+                f"🏆 You won this contest in the group: <b>{group_title}</b>"
+                f"{' - <a href=\"' + group_url + '\">Join Group</a>' if group_url else ''}\n\n"
+                f"To claim your prize, use the /claim command in private messages with the bot.\n\n"
                 f"Good luck in future giveaways! 🌟"
             )
-            
+
             await bot.send_message(
                 chat_id=winner.id,
-                text=notification_text
+                text=notification_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
             )
             giveaway_logger.info(f"✅ Winner notification sent to user {winner.id}")
-            
+
         except Exception as e:
             logger.warning(f"⚠️ Failed to send notification to winner {winner.id}: {e}")    
 
